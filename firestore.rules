@@ -12,7 +12,7 @@ service cloud.firestore {
 
     function isMember() {
       return request.auth != null
-        && request.auth.uid in ['UID_TUYO', 'UID_DE_TU_SOCIO'];
+        && request.auth.uid in ['53RqgaavXfZDCd0Ln00OMwGlGnF2', 'cqjDflCzPyb1gYwU7EklOpYVSk02'];
     }
 
     // Datos públicos del cifrado: la sal y la prueba de verificación de la
