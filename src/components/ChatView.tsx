@@ -1,26 +1,17 @@
 "use client";
 
 /**
- * ChatView.tsx — Una conversación: mensajes cifrados, fotos y archivos.
+ * ChatView.tsx — Una conversación.
  *
- * - Escucha los mensajes en vivo y los descifra en el dispositivo.
- * - Adjuntar: botón del clip, pegar (Ctrl+V) o arrastrar al chat.
- *   Los archivos se ven en una bandeja antes de enviarlos. Con un solo
- *   adjunto, el texto escrito se envía como su pie de foto.
- * - "visto" en tu último mensaje cuando el otro ya lo leyó.
- * - Nada se borra: las reglas de Firestore prohíben editar o eliminar.
+ * - Mensajes en vivo, descifrados en el dispositivo.
+ * - Texto, fotos, archivos, notas de voz y stickers; responder citando y
+ *   reaccionar; "escribiendo…"; "visto".
+ * - Pendientes de la conversación en un panel lateral.
+ * - Arrastrar archivos sobre la conversación los adjunta.
+ * - Nada se borra: las reglas de Firestore prohíben editar o eliminar mensajes.
  */
 
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type ClipboardEvent,
-  type DragEvent,
-  type FormEvent,
-  type KeyboardEvent,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent } from "react";
 import type { User } from "firebase/auth";
 import {
   doc,
@@ -36,58 +27,49 @@ import {
 import { getFirebase } from "@/lib/firebase";
 import { decryptText, encryptText } from "@/lib/crypto";
 import {
-  isAudio,
-  isImage,
-  isVideo,
   messageAadFor,
   messagesCollection,
   parsePayload,
+  previewOf,
   type ChatInfo,
   type FileInfo,
   type Payload,
+  type ReplyRef,
 } from "@/lib/chats";
-import { formatSize, prepareFile, uploadFile, type PreparedFile } from "@/lib/files";
+import { MAX_FILE_SIZE, prepareFile, uploadFile, type PreparedFile } from "@/lib/files";
+import { setReaction } from "@/lib/reactions";
+import { createTask, MAX_TASK_LENGTH, type Task } from "@/lib/tasks";
 import { dayKey, dayLabel, formatTime } from "@/lib/format";
-import { FileAttachment, ImageAttachment, Lightbox, MediaAttachment } from "./Attachments";
-import { BackIcon, CloseIcon, FileIcon, MoreIcon, PaperclipIcon, SendIcon } from "./Icons";
-
-type MessageState = "ok" | "failed" | "legacy";
-
-interface Message {
-  id: string;
-  uid: string;
-  payload: Payload | null; // null si no se pudo descifrar
-  state: MessageState; // legacy = mensaje antiguo guardado sin cifrar
-  createdAt: Date | null;
-  pending: boolean; // true mientras el servidor no confirma que lo guardó
-}
+import { useReactions } from "@/hooks/useReactions";
+import { useTyping } from "@/hooks/useTyping";
+import { extensionFor, type Recording } from "@/hooks/useVoiceRecorder";
+import { Lightbox } from "./Attachments";
+import { Composer, MAX_LENGTH, type PendingAttachment } from "./Composer";
+import { MessageActions } from "./MessageActions";
+import { MessageItem, type ChatMessage } from "./MessageItem";
+import { TasksPanel } from "./Tasks";
+import { BackIcon, FileIcon, MicIcon, MoreIcon, TasksIcon } from "./Icons";
 
 interface Decrypted {
   payload: Payload | null;
   state: "ok" | "failed";
 }
 
-interface PendingAttachment {
-  localId: string;
-  prepared: PreparedFile;
-  previewUrl: string | null;
-}
-
 interface Upload {
   localId: string;
   name: string;
   previewUrl: string | null;
+  voice: boolean;
   progress: number;
   error: string | null;
 }
 
 const PAGE_SIZE = 200;
-const MAX_LENGTH = 4000;
 const MAX_ATTACHMENTS = 10;
 
 function errorMessage(err: unknown): string {
   return (err as { code?: string }).code === "permission-denied"
-    ? "Tu cuenta no tiene permiso para escribir aquí. Revisa las reglas de Firestore."
+    ? "Tu cuenta no tiene permiso para esto. Revisa las reglas de Firestore."
     : "No se pudo enviar. Revisa tu conexión.";
 }
 
@@ -96,6 +78,7 @@ export function ChatView({
   user,
   cryptoKey,
   otherRead,
+  openTasks,
   onMarkRead,
   onBack,
   onEdit,
@@ -105,40 +88,49 @@ export function ChatView({
   user: User;
   cryptoKey: CryptoKey;
   otherRead: Date | null;
+  openTasks: Task[];
   onMarkRead: (chatId: string) => void;
   onBack: () => void;
   onEdit: () => void;
   onToggleArchive: () => void;
 }) {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [preparing, setPreparing] = useState(false);
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [viewer, setViewer] = useState<{ file: FileInfo; url: string } | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [replyTo, setReplyTo] = useState<ReplyRef | null>(null);
+  const [focusSignal, setFocusSignal] = useState(0);
+  const [actionFor, setActionFor] = useState<ChatMessage | null>(null);
+  const [highlight, setHighlight] = useState<string | null>(null);
+  const [tasksOpen, setTasksOpen] = useState(false);
+
+  const reactions = useReactions(chat.id, cryptoKey);
+  const { otherTyping, setTyping } = useTyping(chat.id, user.uid);
 
   const listRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const nearBottom = useRef(true);
   const heightBeforeLoadMore = useRef<number | null>(null);
   const prevCount = useRef(0);
-  const isTouch = useRef(false);
   const plainCache = useRef(new Map<string, Decrypted>());
   const snapshotSeq = useRef(0);
   const lastMarked = useRef<string | null>(null);
+  const noticeTimer = useRef<number | null>(null);
 
-  useEffect(() => {
-    isTouch.current = window.matchMedia("(pointer: coarse)").matches;
-  }, []);
+  const showNotice = (text: string) => {
+    setNotice(text);
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setNotice(null), 2500);
+  };
 
-  // Mensajes en tiempo real (los últimos `limit`).
+  // ---------- Mensajes en tiempo real (los últimos `limit`) ----------
   useEffect(() => {
     const { db } = getFirebase();
     const q = query(messagesCollection(db, chat.id), orderBy("createdAt", "asc"), limitToLast(limit));
@@ -149,24 +141,18 @@ export function ChatView({
         setError(null);
         setHasMore(snap.size >= limit);
         const seq = ++snapshotSeq.current;
-        const aadFor = (uid: string) => messageAadFor(chat.id, uid);
 
-        const list = snap.docs.map(async (d): Promise<Message> => {
+        const list = snap.docs.map(async (d): Promise<ChatMessage> => {
           const data = d.data({ serverTimestamps: "estimate" });
           const ts = data.createdAt as Timestamp | null | undefined;
           const uid = typeof data.uid === "string" ? data.uid : "";
-          const base = {
-            id: d.id,
-            uid,
-            createdAt: ts ? ts.toDate() : null,
-            pending: d.metadata.hasPendingWrites,
-          };
+          const base = { id: d.id, uid, createdAt: ts ? ts.toDate() : null, pending: d.metadata.hasPendingWrites };
 
           if (typeof data.ct === "string" && typeof data.iv === "string") {
             let plain = plainCache.current.get(d.id);
             if (!plain) {
               try {
-                const text = await decryptText(cryptoKey, { iv: data.iv, ct: data.ct }, aadFor(uid));
+                const text = await decryptText(cryptoKey, { iv: data.iv, ct: data.ct }, messageAadFor(chat.id, uid));
                 if (data.v === 2) {
                   const payload = parsePayload(text);
                   plain = payload ? { payload, state: "ok" } : { payload: null, state: "failed" };
@@ -203,7 +189,7 @@ export function ChatView({
     );
   }, [chat.id, limit, cryptoKey]);
 
-  // Marcar como leído cuando la conversación está abierta y visible.
+  // ---------- Marcar como leído cuando está abierta y visible ----------
   useEffect(() => {
     if (!loaded) return;
     const maybeMark = () => {
@@ -213,8 +199,7 @@ export function ChatView({
       if (lastMarked.current === marker) return;
       const firstTime = lastMarked.current === null;
       lastMarked.current = marker;
-      // Si lo último es tuyo no hace falta escribir (ya lo "leíste").
-      if (!firstTime && latest && latest.uid === user.uid) return;
+      if (!firstTime && latest && latest.uid === user.uid) return; // lo último es tuyo
       onMarkRead(chat.id);
     };
     maybeMark();
@@ -222,8 +207,7 @@ export function ChatView({
     return () => document.removeEventListener("visibilitychange", maybeMark);
   }, [messages, loaded, chat.id, user.uid, onMarkRead]);
 
-  // Scroll: al final con mensajes nuevos (si ya estabas abajo); conserva tu
-  // posición al cargar anteriores.
+  // ---------- Scroll ----------
   useLayoutEffect(() => {
     const el = listRef.current;
     if (!el) return;
@@ -240,15 +224,7 @@ export function ChatView({
   useLayoutEffect(() => {
     const el = listRef.current;
     if (el && nearBottom.current) el.scrollTop = el.scrollHeight;
-  }, [uploads.length]);
-
-  // La caja de texto crece con el contenido (hasta un máximo).
-  useLayoutEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
-  }, [draft]);
+  }, [uploads.length, otherTyping, reactions]);
 
   const onScroll = () => {
     const el = listRef.current;
@@ -263,8 +239,19 @@ export function ChatView({
     setLimit((l) => l + PAGE_SIZE);
   };
 
-  // ---------- Adjuntos ----------
+  const jumpTo = useCallback((id: string) => {
+    const el = document.getElementById(`m-${id}`);
+    if (!el) {
+      setError("Ese mensaje es anterior a los cargados. Usa “Cargar mensajes anteriores”.");
+      return;
+    }
+    nearBottom.current = false;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    setHighlight(id);
+    window.setTimeout(() => setHighlight((h) => (h === id ? null : h)), 1800);
+  }, []);
 
+  // ---------- Adjuntos ----------
   const addFiles = async (files: File[]) => {
     if (files.length === 0) return;
     setPreparing(true);
@@ -294,26 +281,16 @@ export function ChatView({
     });
   };
 
-  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(e.clipboardData.files);
-    if (files.length > 0) {
-      e.preventDefault();
-      void addFiles(files);
-    }
-  };
-
   const onDragOver = (e: DragEvent<HTMLDivElement>) => {
     if (Array.from(e.dataTransfer.types).includes("Files")) {
       e.preventDefault();
       setDragOver(true);
     }
   };
-
   const onDragLeave = (e: DragEvent<HTMLDivElement>) => {
     const next = e.relatedTarget as Node | null;
     if (!next || !e.currentTarget.contains(next)) setDragOver(false);
   };
-
   const onDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setDragOver(false);
@@ -322,79 +299,116 @@ export function ChatView({
 
   // ---------- Envío ----------
 
-  /** Cifra y envía un mensaje. Devuelve en cuanto aparece en pantalla. */
+  /** Cifra y envía un mensaje. Vuelve en cuanto aparece en pantalla. */
   const sendPayload = async (db: Firestore, payload: Payload) => {
     const ref = doc(messagesCollection(db, chat.id));
     const sealed = await encryptText(cryptoKey, JSON.stringify(payload), messageAadFor(chat.id, user.uid));
     plainCache.current.set(ref.id, { payload, state: "ok" });
     const batch = writeBatch(db);
-    batch.set(ref, {
-      ct: sealed.ct,
-      iv: sealed.iv,
-      uid: user.uid,
-      v: 2,
-      createdAt: serverTimestamp(),
-    });
-    batch.update(doc(db, "chats", chat.id), {
-      lastMessageAt: serverTimestamp(),
-      lastMessageBy: user.uid,
-    });
+    batch.set(ref, { ct: sealed.ct, iv: sealed.iv, uid: user.uid, v: 2, createdAt: serverTimestamp() });
+    batch.update(doc(db, "chats", chat.id), { lastMessageAt: serverTimestamp(), lastMessageBy: user.uid });
     return { committed: batch.commit() };
   };
 
-  const send = async () => {
-    const text = draft.trim();
-    const files = attachments;
-    if ((!text && files.length === 0) || preparing) return;
+  /** Sube un archivo cifrado mostrando el progreso y luego envía su mensaje. */
+  const uploadAndSend = async (
+    db: Firestore,
+    localId: string,
+    prepared: PreparedFile,
+    previewUrl: string | null,
+    makePayload: (info: FileInfo) => Payload,
+    voice = false
+  ) => {
+    setUploads((u) => [...u, { localId, name: prepared.name, previewUrl, voice, progress: 0, error: null }]);
+    try {
+      const info = await uploadFile(db, cryptoKey, user.uid, prepared, (progress) =>
+        setUploads((u) => u.map((x) => (x.localId === localId ? { ...x, progress } : x)))
+      );
+      const { committed } = await sendPayload(db, makePayload(info));
+      setUploads((u) => u.filter((x) => x.localId !== localId));
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      await committed;
+    } catch (err) {
+      setUploads((u) => u.map((x) => (x.localId === localId ? { ...x, error: errorMessage(err) } : x)));
+    }
+  };
+
+  const takeReply = (): ReplyRef | undefined => {
+    const re = replyTo ?? undefined;
+    setReplyTo(null);
+    return re;
+  };
+
+  const onSend = async (text: string): Promise<boolean> => {
     if (text.length > MAX_LENGTH) {
       setError(`Máximo ${MAX_LENGTH} caracteres por mensaje.`);
-      return;
+      return false;
     }
-    setDraft("");
+    const files = attachments;
+    const re = takeReply();
     setAttachments([]);
     setError(null);
+    setTyping(false);
     nearBottom.current = true;
     const { db } = getFirebase();
 
-    const sendText = async () => {
+    const sendText = async (withReply?: ReplyRef) => {
       try {
-        const { committed } = await sendPayload(db, { t: "text", text });
+        const { committed } = await sendPayload(db, withReply ? { t: "text", text, re: withReply } : { t: "text", text });
         await committed;
+        return true;
       } catch (err) {
         setError(errorMessage(err));
-        setDraft((current) => (current ? current : text));
+        if (withReply) setReplyTo(withReply);
+        return false;
       }
     };
 
-    if (files.length === 0) {
-      await sendText();
-      return;
-    }
+    if (files.length === 0) return sendText(re);
 
     const caption = files.length === 1 ? text : "";
-    for (const a of files) {
-      setUploads((u) => [
-        ...u,
-        { localId: a.localId, name: a.prepared.name, previewUrl: a.previewUrl, progress: 0, error: null },
-      ]);
-      try {
-        const info = await uploadFile(db, cryptoKey, user.uid, a.prepared, (progress) =>
-          setUploads((u) => u.map((x) => (x.localId === a.localId ? { ...x, progress } : x)))
-        );
-        const { committed } = await sendPayload(
-          db,
-          caption ? { t: "file", text: caption, file: info } : { t: "file", file: info }
-        );
-        setUploads((u) => u.filter((x) => x.localId !== a.localId));
-        if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
-        await committed;
-      } catch (err) {
-        setUploads((u) =>
-          u.map((x) => (x.localId === a.localId ? { ...x, error: errorMessage(err) } : x))
-        );
-      }
+    for (const [i, a] of files.entries()) {
+      const reHere = i === 0 ? re : undefined;
+      await uploadAndSend(db, a.localId, a.prepared, a.previewUrl, (file) => {
+        const base: Payload = caption ? { t: "file", text: caption, file } : { t: "file", file };
+        return reHere ? { ...base, re: reHere } : base;
+      });
     }
-    if (files.length > 1 && text) await sendText();
+    if (files.length > 1 && text) return sendText();
+    return true;
+  };
+
+  const onSendSticker = (file: FileInfo) => {
+    const re = takeReply();
+    nearBottom.current = true;
+    const { db } = getFirebase();
+    void sendPayload(db, re ? { t: "sticker", file, re } : { t: "sticker", file })
+      .then(({ committed }) => committed)
+      .catch((err) => setError(errorMessage(err)));
+  };
+
+  const onSendVoice = (recording: Recording) => {
+    if (recording.blob.size > MAX_FILE_SIZE) {
+      setError("La nota de voz es demasiado larga.");
+      return;
+    }
+    const re = takeReply();
+    nearBottom.current = true;
+    const prepared: PreparedFile = {
+      blob: recording.blob,
+      name: `nota-de-voz.${extensionFor(recording.mime)}`,
+      mime: recording.mime,
+      isImage: false,
+    };
+    const dur = Math.round(recording.seconds * 10) / 10;
+    void uploadAndSend(
+      getFirebase().db,
+      crypto.randomUUID(),
+      prepared,
+      null,
+      (file) => (re ? { t: "voice", file, dur, re } : { t: "voice", file, dur }),
+      true
+    );
   };
 
   const dismissUpload = (localId: string) => {
@@ -405,48 +419,42 @@ export function ChatView({
     });
   };
 
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    void send();
+  // ---------- Acciones de un mensaje ----------
+  const myReaction = (msgId: string) =>
+    reactions.get(msgId)?.find((r) => r.uid === user.uid)?.emoji ?? null;
+
+  const toggleReaction = (m: ChatMessage, emoji: string) => {
+    const next = myReaction(m.id) === emoji ? "" : emoji;
+    void setReaction(getFirebase().db, cryptoKey, chat.id, m.id, user.uid, next).catch(() =>
+      setError("No se pudo guardar la reacción.")
+    );
   };
 
-  // En computadora, Enter envía y Shift+Enter hace salto de línea.
-  // En el teléfono, Enter hace salto de línea y se envía con el botón.
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && !isTouch.current) {
-      e.preventDefault();
-      void send();
-    }
+  const replyToMessage = (m: ChatMessage) => {
+    setReplyTo({ id: m.id, uid: m.uid, preview: previewOf(m.payload) });
+    setFocusSignal((n) => n + 1);
+  };
+
+  const copyMessage = (m: ChatMessage) => {
+    const text = m.payload?.t === "text" ? m.payload.text : m.payload?.t === "file" ? m.payload.text ?? "" : "";
+    if (!text) return;
+    navigator.clipboard
+      ?.writeText(text)
+      .then(() => showNotice("Texto copiado"))
+      .catch(() => setError("No se pudo copiar."));
+  };
+
+  const taskFromMessage = (m: ChatMessage) => {
+    const text =
+      m.payload?.t === "text" ? m.payload.text.slice(0, MAX_TASK_LENGTH) : previewOf(m.payload);
+    createTask(getFirebase().db, cryptoKey, user.uid, chat.id, text, m.id)
+      .then(() => showNotice("Agregado a pendientes"))
+      .catch((err) => setError(errorMessage(err)));
   };
 
   // ---------- Render ----------
-
   let lastMineId: string | null = null;
   for (const m of messages) if (m.uid === user.uid) lastMineId = m.id;
-
-  const renderContent = (m: Message) => {
-    if (!m.payload) {
-      return <p className="text-[13px] italic opacity-70">No se pudo descifrar este mensaje.</p>;
-    }
-    if (m.payload.t === "text") {
-      return <p className="whitespace-pre-wrap break-words text-[15px] leading-snug">{m.payload.text}</p>;
-    }
-    const f = m.payload.file;
-    return (
-      <div className="space-y-1.5">
-        {isImage(f) ? (
-          <ImageAttachment file={f} cryptoKey={cryptoKey} onOpen={(file, url) => setViewer({ file, url })} />
-        ) : isVideo(f) || isAudio(f) ? (
-          <MediaAttachment file={f} cryptoKey={cryptoKey} />
-        ) : (
-          <FileAttachment file={f} cryptoKey={cryptoKey} />
-        )}
-        {m.payload.text && (
-          <p className="whitespace-pre-wrap break-words px-1 text-[15px] leading-snug">{m.payload.text}</p>
-        )}
-      </div>
-    );
-  };
 
   let lastDay = "";
   const rows = messages.map((m) => {
@@ -460,243 +468,256 @@ export function ChatView({
       }
     }
     const seen = !!(otherRead && m.createdAt && otherRead >= m.createdAt);
-    const status =
-      mine && m.id === lastMineId ? (m.pending ? "enviando…" : seen ? "visto" : "enviado") : "";
-    const footer = [
-      m.createdAt ? formatTime(m.createdAt) : "",
-      m.state === "legacy" ? "sin cifrar" : "",
-      status,
-    ]
+    const status = mine && m.id === lastMineId ? (m.pending ? "enviando…" : seen ? "visto" : "enviado") : "";
+    const footer = [m.createdAt ? formatTime(m.createdAt) : "", m.state === "legacy" ? "sin cifrar" : "", status]
       .filter(Boolean)
       .join(" · ");
-    const isFile = m.payload?.t === "file";
-
     return (
-      <div key={m.id}>
-        {separator && <div className="my-4 text-center text-[11px] text-neutral-500">{separator}</div>}
-        <div className={`mb-1.5 flex ${mine ? "justify-end" : "justify-start"}`}>
-          <div
-            className={`max-w-[85%] rounded-2xl sm:max-w-[75%] ${isFile ? "p-1.5" : "px-3.5 py-2"} ${
-              mine ? "bg-neutral-100 text-neutral-900" : "bg-neutral-800 text-neutral-100"
-            }`}
-          >
-            {renderContent(m)}
-            <p
-              className={`mt-0.5 text-right text-[10px] ${isFile ? "px-1.5" : ""} ${
-                mine ? (status === "visto" ? "text-sky-600" : "text-neutral-500") : "text-neutral-400"
-              }`}
-            >
-              {footer}
-            </p>
-          </div>
-        </div>
-      </div>
+      <MessageItem
+        key={m.id}
+        m={m}
+        mine={mine}
+        myUid={user.uid}
+        footer={footer}
+        footerSeen={status === "visto"}
+        separator={separator}
+        reactions={reactions.get(m.id) ?? []}
+        highlighted={highlight === m.id}
+        cryptoKey={cryptoKey}
+        onOpenImage={(file, url) => setViewer({ file, url })}
+        onActions={setActionFor}
+        onToggleReaction={toggleReaction}
+        onJump={jumpTo}
+      />
     );
   });
 
   return (
-    <div
-      className="relative flex h-full min-h-0 flex-col"
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
-    >
-      <header className="flex shrink-0 items-center gap-2 border-b border-neutral-900 px-2 pb-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] md:px-4">
-        <button
-          onClick={onBack}
-          className="rounded-full p-2 text-neutral-300 hover:bg-neutral-900 md:hidden"
-          aria-label="Volver a la lista"
-        >
-          <BackIcon />
-        </button>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-[15px] font-medium">{chat.name}</p>
-          <p className="truncate text-xs text-neutral-500">
-            {chat.group}
-            {chat.archived ? " · archivada" : ""}
-          </p>
-        </div>
-        <div className="relative">
+    <div className="flex h-full min-h-0">
+      <div
+        className="relative flex min-w-0 flex-1 flex-col"
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
+        <header className="flex shrink-0 items-center gap-1 border-b border-neutral-900 px-2 pb-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] md:px-4">
           <button
-            onClick={() => setMenuOpen((v) => !v)}
-            className="rounded-full p-2 text-neutral-300 hover:bg-neutral-900"
-            aria-label="Opciones de la conversación"
+            onClick={onBack}
+            className="rounded-full p-2 text-neutral-300 hover:bg-neutral-900 md:hidden"
+            aria-label="Volver a la lista"
           >
-            <MoreIcon />
+            <BackIcon />
           </button>
-          {menuOpen && (
-            <>
-              <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
-              <div className="absolute right-0 z-30 mt-1 w-56 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 py-1 text-sm shadow-xl">
-                <button
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onEdit();
-                  }}
-                  className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
-                >
-                  Cambiar nombre o proyecto
-                </button>
-                <button
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onToggleArchive();
-                  }}
-                  className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
-                >
-                  {chat.archived ? "Desarchivar" : "Archivar"}
-                </button>
+          <div className="min-w-0 flex-1 pl-1">
+            <p className="truncate text-[15px] font-medium">{chat.name}</p>
+            <p className="truncate text-xs text-neutral-500">
+              {otherTyping ? (
+                <span className="text-sky-400">escribiendo…</span>
+              ) : (
+                <>
+                  {chat.group}
+                  {chat.archived ? " · archivada" : ""}
+                </>
+              )}
+            </p>
+          </div>
+          <button
+            onClick={() => setTasksOpen((v) => !v)}
+            className={`relative rounded-full p-2 hover:bg-neutral-900 ${tasksOpen ? "text-neutral-100" : "text-neutral-300"}`}
+            aria-label={`Pendientes (${openTasks.length})`}
+            aria-pressed={tasksOpen}
+          >
+            <TasksIcon />
+            {openTasks.length > 0 && (
+              <span className="absolute -right-0.5 -top-0.5 min-w-[1.1rem] rounded-full bg-amber-500 px-1 text-center text-[10px] font-semibold leading-[1.1rem] text-neutral-950">
+                {openTasks.length}
+              </span>
+            )}
+          </button>
+          <div className="relative">
+            <button
+              onClick={() => setMenuOpen((v) => !v)}
+              className="rounded-full p-2 text-neutral-300 hover:bg-neutral-900"
+              aria-label="Opciones de la conversación"
+            >
+              <MoreIcon />
+            </button>
+            {menuOpen && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
+                <div className="absolute right-0 z-30 mt-1 w-56 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 py-1 text-sm shadow-xl">
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onEdit();
+                    }}
+                    className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
+                  >
+                    Cambiar nombre o proyecto
+                  </button>
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onToggleArchive();
+                    }}
+                    className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
+                  >
+                    {chat.archived ? "Desarchivar" : "Archivar"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </header>
+
+        <div ref={listRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto px-3 py-4 [overflow-anchor:none] md:px-6">
+          {hasMore && (
+            <div className="mb-4 flex justify-center">
+              <button
+                onClick={loadMore}
+                className="rounded-full border border-neutral-800 px-3 py-1.5 text-xs text-neutral-400 hover:bg-neutral-900"
+              >
+                Cargar mensajes anteriores
+              </button>
+            </div>
+          )}
+
+          {loaded && messages.length === 0 && uploads.length === 0 && !error && (
+            <p className="mt-8 text-center text-sm text-neutral-600">Todavía no hay mensajes. Escribe el primero.</p>
+          )}
+
+          {rows}
+
+          {uploads.map((u) => (
+            <div key={u.localId} className="mb-1.5 flex justify-end">
+              <div className="max-w-[85%] rounded-2xl bg-neutral-100 p-1.5 text-neutral-900 sm:max-w-[75%]">
+                {u.previewUrl ? (
+                  <img src={u.previewUrl} alt={u.name} className="max-h-60 max-w-[260px] rounded-xl opacity-60" />
+                ) : (
+                  <div className="flex items-center gap-2 px-2 py-1.5 text-sm">
+                    {u.voice ? (
+                      <MicIcon className="h-5 w-5 shrink-0 opacity-60" />
+                    ) : (
+                      <FileIcon className="h-5 w-5 shrink-0 opacity-60" />
+                    )}
+                    <span className="truncate">{u.voice ? "Nota de voz" : u.name}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-3 px-1.5 pt-1">
+                  <span className={`text-[10px] ${u.error ? "text-red-600" : "text-neutral-500"}`}>
+                    {u.error ?? `Cifrando y subiendo… ${Math.round(u.progress * 100)}%`}
+                  </span>
+                  {u.error && (
+                    <button onClick={() => dismissUpload(u.localId)} className="text-[10px] underline">
+                      Quitar
+                    </button>
+                  )}
+                </div>
               </div>
-            </>
+            </div>
+          ))}
+
+          {otherTyping && (
+            <div className="mb-1.5 flex justify-start" aria-label="Tu socio está escribiendo">
+              <div className="flex items-center gap-1 rounded-2xl bg-neutral-800 px-3.5 py-3">
+                {[0, 1, 2].map((i) => (
+                  <span
+                    key={i}
+                    className="h-1.5 w-1.5 animate-bounce rounded-full bg-neutral-400"
+                    style={{ animationDelay: `${i * 150}ms` }}
+                  />
+                ))}
+              </div>
+            </div>
           )}
         </div>
-      </header>
 
-      <div
-        ref={listRef}
-        onScroll={onScroll}
-        className="min-h-0 flex-1 overflow-y-auto px-3 py-4 [overflow-anchor:none] md:px-6"
-      >
-        {hasMore && (
-          <div className="mb-4 flex justify-center">
-            <button
-              onClick={loadMore}
-              className="rounded-full border border-neutral-800 px-3 py-1.5 text-xs text-neutral-400 hover:bg-neutral-900"
-            >
-              Cargar mensajes anteriores
+        {chat.archived && (
+          <div className="shrink-0 border-t border-neutral-900 px-4 py-2 text-xs text-neutral-500">
+            Esta conversación está archivada.{" "}
+            <button onClick={onToggleArchive} className="underline">
+              Desarchivar
             </button>
           </div>
         )}
 
-        {loaded && messages.length === 0 && uploads.length === 0 && !error && (
-          <p className="mt-8 text-center text-sm text-neutral-600">
-            Todavía no hay mensajes. Escribe el primero.
-          </p>
+        {error && (
+          <div className="flex shrink-0 items-start justify-between gap-3 border-t border-red-900/40 bg-red-950/40 px-4 py-2 text-xs text-red-300">
+            <span>{error}</span>
+            <button onClick={() => setError(null)} className="shrink-0 underline">
+              Cerrar
+            </button>
+          </div>
         )}
 
-        {rows}
-
-        {uploads.map((u) => (
-          <div key={u.localId} className="mb-1.5 flex justify-end">
-            <div className="max-w-[85%] rounded-2xl bg-neutral-100 p-1.5 text-neutral-900 sm:max-w-[75%]">
-              {u.previewUrl ? (
-                <img src={u.previewUrl} alt={u.name} className="max-h-60 max-w-[260px] rounded-xl opacity-60" />
-              ) : (
-                <div className="flex items-center gap-2 px-2 py-1.5 text-sm">
-                  <FileIcon className="h-5 w-5 shrink-0 opacity-60" />
-                  <span className="truncate">{u.name}</span>
-                </div>
-              )}
-              <div className="flex items-center justify-between gap-3 px-1.5 pt-1">
-                <span className={`text-[10px] ${u.error ? "text-red-600" : "text-neutral-500"}`}>
-                  {u.error ?? `Cifrando y subiendo… ${Math.round(u.progress * 100)}%`}
-                </span>
-                {u.error && (
-                  <button onClick={() => dismissUpload(u.localId)} className="text-[10px] underline">
-                    Quitar
-                  </button>
-                )}
-              </div>
-            </div>
+        {notice && (
+          <div className="shrink-0 border-t border-neutral-900 bg-neutral-900 px-4 py-2 text-xs text-neutral-300" role="status">
+            {notice}
           </div>
-        ))}
+        )}
+
+        <Composer
+          cryptoKey={cryptoKey}
+          uid={user.uid}
+          attachments={attachments}
+          preparing={preparing}
+          replyTo={replyTo ? { author: replyTo.uid === user.uid ? "ti" : "tu socio", preview: replyTo.preview } : null}
+          focusSignal={focusSignal}
+          onAddFiles={(files) => void addFiles(files)}
+          onRemoveAttachment={removeAttachment}
+          onCancelReply={() => setReplyTo(null)}
+          onSend={onSend}
+          onSendSticker={onSendSticker}
+          onSendVoice={onSendVoice}
+          onTyping={setTyping}
+        />
+
+        {dragOver && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center border-2 border-dashed border-neutral-500 bg-neutral-950/80 text-sm text-neutral-300">
+            Suelta aquí para adjuntar
+          </div>
+        )}
       </div>
 
-      {chat.archived && (
-        <div className="shrink-0 border-t border-neutral-900 px-4 py-2 text-xs text-neutral-500">
-          Esta conversación está archivada.{" "}
-          <button onClick={onToggleArchive} className="underline">
-            Desarchivar
-          </button>
-        </div>
+      {tasksOpen && (
+        <TasksPanel
+          chat={chat}
+          openTasks={openTasks}
+          uid={user.uid}
+          cryptoKey={cryptoKey}
+          onJump={jumpTo}
+          onClose={() => setTasksOpen(false)}
+        />
       )}
 
-      {error && (
-        <div className="shrink-0 border-t border-red-900/40 bg-red-950/40 px-4 py-2 text-xs text-red-300">
-          {error}
-        </div>
-      )}
-
-      {(attachments.length > 0 || preparing) && (
-        <div className="flex shrink-0 gap-2 overflow-x-auto border-t border-neutral-900 px-3 pt-3">
-          {attachments.map((a) => (
-            <div key={a.localId} className="relative shrink-0">
-              {a.previewUrl ? (
-                <img src={a.previewUrl} alt={a.prepared.name} className="h-16 w-16 rounded-lg object-cover" />
-              ) : (
-                <div className="flex h-16 w-36 flex-col justify-center rounded-lg border border-neutral-800 bg-neutral-900 px-2.5">
-                  <span className="truncate text-xs text-neutral-200">{a.prepared.name}</span>
-                  <span className="text-[10px] text-neutral-500">{formatSize(a.prepared.blob.size)}</span>
-                </div>
-              )}
-              <button
-                onClick={() => removeAttachment(a.localId)}
-                className="absolute -right-1.5 -top-1.5 rounded-full bg-neutral-700 p-0.5 text-white"
-                aria-label={`Quitar ${a.prepared.name}`}
-              >
-                <CloseIcon className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ))}
-          {preparing && (
-            <div className="flex h-16 items-center px-2 text-xs text-neutral-500">Preparando…</div>
-          )}
-        </div>
-      )}
-
-      <form
-        onSubmit={onSubmit}
-        className="flex shrink-0 items-end gap-1.5 border-t border-neutral-900 px-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 md:px-4"
-      >
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            const files = Array.from(e.target.files ?? []);
-            e.target.value = "";
-            void addFiles(files);
+      {actionFor && (
+        <MessageActions
+          preview={previewOf(actionFor.payload)}
+          myReaction={myReaction(actionFor.id)}
+          canCopy={
+            actionFor.payload?.t === "text" || (actionFor.payload?.t === "file" && !!actionFor.payload.text)
+          }
+          onReact={(emoji) => {
+            toggleReaction(actionFor, emoji);
+            setActionFor(null);
           }}
+          onReply={() => {
+            replyToMessage(actionFor);
+            setActionFor(null);
+          }}
+          onCopy={() => {
+            copyMessage(actionFor);
+            setActionFor(null);
+          }}
+          onTask={() => {
+            taskFromMessage(actionFor);
+            setActionFor(null);
+          }}
+          onClose={() => setActionFor(null)}
         />
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="shrink-0 rounded-full p-2.5 text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200"
-          aria-label="Adjuntar foto o archivo"
-        >
-          <PaperclipIcon />
-        </button>
-        <textarea
-          ref={inputRef}
-          rows={1}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={onKeyDown}
-          onPaste={onPaste}
-          maxLength={MAX_LENGTH}
-          placeholder={attachments.length === 1 ? "Añade un comentario" : "Mensaje"}
-          className="min-w-0 flex-1 resize-none rounded-2xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-base leading-snug outline-none transition-colors focus:border-neutral-600"
-        />
-        <button
-          type="submit"
-          disabled={(!draft.trim() && attachments.length === 0) || preparing}
-          className="shrink-0 rounded-full bg-neutral-100 p-2.5 text-neutral-900 transition-colors hover:bg-white disabled:opacity-30"
-          aria-label="Enviar"
-        >
-          <SendIcon />
-        </button>
-      </form>
-
-      {dragOver && (
-        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center border-2 border-dashed border-neutral-500 bg-neutral-950/80 text-sm text-neutral-300">
-          Suelta aquí para adjuntar
-        </div>
       )}
 
-      {viewer && (
-        <Lightbox file={viewer.file} url={viewer.url} cryptoKey={cryptoKey} onClose={() => setViewer(null)} />
-      )}
+      {viewer && <Lightbox file={viewer.file} url={viewer.url} cryptoKey={cryptoKey} onClose={() => setViewer(null)} />}
     </div>
   );
 }

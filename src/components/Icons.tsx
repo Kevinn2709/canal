@@ -98,6 +98,67 @@ export function PlayIcon(p: IconProps) {
   );
 }
 
+export function MicIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0014 0M12 18v3" />
+    </Svg>
+  );
+}
+
+export function PauseIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M8 5v14M16 5v14" />
+    </Svg>
+  );
+}
+
+export function TrashIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />
+    </Svg>
+  );
+}
+
+export function SmileIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8.5 14.5a4.5 4.5 0 007 0M9 9.5h.01M15 9.5h.01" />
+    </Svg>
+  );
+}
+
+export function ReplyIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M9 14l-5-5 5-5" />
+      <path d="M4 9h10a6 6 0 016 6v4" />
+    </Svg>
+  );
+}
+
+export function TasksIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M9 6h11M9 12h11M9 18h11" />
+      <path d="M3.5 6l1 1 2-2M3.5 12l1 1 2-2M3.5 18l1 1 2-2" />
+    </Svg>
+  );
+}
+
+export function CopyIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15V5a2 2 0 012-2h8" />
+    </Svg>
+  );
+}
+
 export function LockIcon(p: IconProps) {
   return (
     <Svg {...p}>

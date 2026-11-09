@@ -36,7 +36,8 @@ const nextConfig = {
           { key: "Referrer-Policy", value: "no-referrer" },
           {
             key: "Permissions-Policy",
-            value: "geolocation=(), microphone=(), camera=()",
+            // micrófono solo para este sitio: notas de voz
+            value: "geolocation=(), microphone=(self), camera=()",
           },
         ],
       },

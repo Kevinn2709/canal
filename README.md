@@ -39,6 +39,25 @@ No hace falta ningún servidor propio (ni Render).
 9. **No leídos y "visto":** un punto azul marca las conversaciones con
    mensajes nuevos, y el título de la pestaña dice cuántas son. Tu último
    mensaje dice "visto" cuando el otro ya lo leyó.
+10. **Menú de cada mensaje:** pulsación larga en el teléfono, clic derecho o el
+    botón "…" al pasar el ratón. Desde ahí: reaccionar, responder, copiar y
+    marcar como pendiente.
+11. **Responder citando y reacciones:** la respuesta muestra el mensaje
+    original (tocarlo lleva a él). Una reacción por persona y mensaje; tocar
+    una reacción pone o quita la tuya. Ambas van cifradas.
+12. **Notas de voz:** el micrófono aparece cuando la caja de texto está vacía.
+    Toca para grabar (hasta 5 minutos) y luego enviar o descartar. El navegador
+    pedirá permiso para el micrófono la primera vez. Si el otro navegador no
+    reproduce el formato, se ofrece descargarla.
+13. **Stickers propios:** la carita abre la biblioteca, que comparten los
+    dos. "Agregar" convierte cualquier imagen en sticker de 512 px (los PNG con
+    fondo transparente quedan mejor; los GIF conservan la animación). "Editar"
+    permite quitarlos de la biblioteca.
+14. **"escribiendo…":** se ve en vivo cuando el otro escribe. Solo se guarda la
+    hora, nunca el texto.
+15. **Pendientes:** cada conversación tiene su lista (botón de la lista en la
+    cabecera), y "Pendientes" en la barra lateral muestra todos, agrupados por
+    proyecto. Se marcan como hechos o se reabren; nunca se borran.
 
 ## Qué protege y qué no
 
@@ -56,8 +75,10 @@ No protege contra:
 - **Un teléfono desbloqueado** con la sesión iniciada y la llave recordada, o
   alguien que conozca la frase.
 - **Metadatos:** en la consola se ve quién escribió, cuándo, cuántas
-  conversaciones hay, cuándo se leyó cada una y más o menos qué tan largo es
-  cada mensaje o archivo (no su contenido ni su nombre).
+  conversaciones hay, cuándo se leyó cada una, cuándo alguien estaba
+  escribiendo, qué mensajes tienen reacción, cuántos pendientes tiene cada
+  conversación y más o menos qué tan largo es cada mensaje o archivo (no su
+  contenido, su nombre ni el emoji).
 - **Cambios al código de la web:** quien controle tu cuenta de GitHub o de
   Vercel podría modificar la página para capturar la frase. Activa la
   verificación en dos pasos en GitHub, Vercel y Google.
@@ -86,17 +107,17 @@ deja de responder hasta el día (o mes) siguiente; no cobra nada.
 - Si algún día necesitan más espacio, Firebase Cloud Storage da 5 GB sin costo,
   pero exige el plan Blaze (con tarjeta).
 
-## Actualizar desde la versión anterior
+## Actualizar desde una versión anterior
 
-El historial no se pierde: queda en la conversación "General".
+Nada del historial se pierde.
 
 1. **Primero las reglas:** en Firebase → Firestore Database → Reglas, pega el
    nuevo `firestore.rules`, pon sus dos UID y publica. Las reglas nuevas
    siguen aceptando la versión anterior de la web, así que no se rompe nada
    mientras actualizas.
-2. **Luego el código:** en GitHub borra `src/components/Chat.tsx` y sube el
-   contenido de esta carpeta. Este paquete no trae `firebase-config.ts`, así
-   que tu configuración se conserva.
+2. **Luego el código:** sube el contenido de esta carpeta a GitHub (si vienes
+   de la versión de un solo chat, borra antes `src/components/Chat.tsx`). Este
+   paquete no trae `firebase-config.ts`, así que tu configuración se conserva.
 3. Vercel redespliega solo. Recarguen la web en ambos dispositivos.
 
 ## Instalación

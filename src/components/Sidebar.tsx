@@ -12,7 +12,7 @@
 import { useState } from "react";
 import type { ChatInfo } from "@/lib/chats";
 import { listTime } from "@/lib/format";
-import { PlusIcon } from "./Icons";
+import { PlusIcon, TasksIcon } from "./Icons";
 
 function byRecent(a: ChatInfo, b: ChatInfo): number {
   return (b.lastMessageAt?.getTime() ?? 0) - (a.lastMessageAt?.getTime() ?? 0);
@@ -21,20 +21,27 @@ function byRecent(a: ChatInfo, b: ChatInfo): number {
 export function Sidebar({
   chats,
   selectedId,
+  tasksSelected,
+  taskCounts,
   email,
   isUnread,
   onSelect,
+  onOpenTasks,
   onCreate,
   onLogout,
 }: {
   chats: ChatInfo[];
   selectedId: string | null;
+  tasksSelected: boolean;
+  taskCounts: Record<string, number>;
   email: string;
   isUnread: (chat: ChatInfo) => boolean;
   onSelect: (id: string) => void;
+  onOpenTasks: () => void;
   onCreate: () => void;
   onLogout: () => void;
 }) {
+  const totalTasks = Object.values(taskCounts).reduce((a, b) => a + b, 0);
   const [showArchived, setShowArchived] = useState(false);
 
   const active = chats.filter((c) => !c.archived).sort(byRecent);
@@ -69,6 +76,14 @@ export function Sidebar({
         >
           {chat.name}
         </span>
+        {(taskCounts[chat.id] ?? 0) > 0 && (
+          <span
+            className="shrink-0 rounded-full bg-amber-500/15 px-1.5 text-[10px] font-medium text-amber-400"
+            aria-label={`${taskCounts[chat.id]} pendientes`}
+          >
+            {taskCounts[chat.id]}
+          </span>
+        )}
         {chat.lastMessageAt && (
           <span className={`shrink-0 text-[11px] ${unread ? "text-neutral-200" : "text-neutral-500"}`}>
             {listTime(chat.lastMessageAt)}
@@ -93,6 +108,21 @@ export function Sidebar({
       </div>
 
       <nav className="flex-1 space-y-5 overflow-y-auto px-2 pb-4">
+        <button
+          onClick={onOpenTasks}
+          className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${
+            tasksSelected ? "bg-neutral-800/80" : "hover:bg-neutral-900"
+          }`}
+        >
+          <TasksIcon className="h-4 w-4 text-neutral-400" />
+          <span className="flex-1 text-[15px] text-neutral-300">Pendientes</span>
+          {totalTasks > 0 && (
+            <span className="rounded-full bg-amber-500 px-1.5 text-[11px] font-semibold text-neutral-950">
+              {totalTasks}
+            </span>
+          )}
+        </button>
+
         {groups.map((g) => (
           <section key={g.name}>
             <h2 className="px-3 pb-1 text-[11px] font-medium uppercase tracking-wider text-neutral-500">

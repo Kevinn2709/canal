@@ -98,6 +98,83 @@ service cloud.firestore {
         allow create: if isMember() && validMessage();
         allow update, delete: if false;
       }
+
+      // Reacciones: una por persona y mensaje ({mensaje}_{uid}). El emoji va
+      // cifrado; quitarla la deja vacía. Cada quien solo toca la suya.
+      match /reactions/{reactionId} {
+        allow read: if isMember();
+        allow create, update: if isMember()
+          && request.resource.data.keys().hasOnly(['msg', 'uid', 'ct', 'iv', 'updatedAt'])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.msg is string
+          && reactionId == request.resource.data.msg + '_' + request.auth.uid
+          && request.resource.data.ct is string
+          && request.resource.data.ct.size() <= 200
+          && request.resource.data.iv is string
+          && request.resource.data.iv.size() == 16
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if false;
+      }
+
+      // "escribiendo…": solo la hora (o null). Cada quien solo el suyo.
+      match /typing/{userId} {
+        allow read: if isMember();
+        allow create, update: if isMember()
+          && request.auth.uid == userId
+          && request.resource.data.keys().hasOnly(['at'])
+          && (request.resource.data.at == null || request.resource.data.at == request.time);
+        allow delete: if false;
+      }
+    }
+
+    // Biblioteca de stickers: los datos del archivo van cifrados. Se pueden
+    // ocultar, nunca borrar.
+    match /stickers/{stickerId} {
+      allow read: if isMember();
+      allow create: if isMember()
+        && request.resource.data.keys().hasOnly(['ct', 'iv', 'uid', 'createdAt', 'hidden'])
+        && request.resource.data.ct is string
+        && request.resource.data.ct.size() <= 2000
+        && request.resource.data.iv is string
+        && request.resource.data.iv.size() == 16
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.hidden == false;
+      allow update: if isMember()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hidden'])
+        && request.resource.data.hidden is bool;
+      allow delete: if false;
+    }
+
+    // Pendientes: el texto va cifrado. Se marcan como hechos o se reabren;
+    // nunca se borran.
+    match /tasks/{taskId} {
+      allow read: if isMember();
+      allow create: if isMember()
+        && request.resource.data.keys().hasOnly(
+             ['chatId', 'ct', 'iv', 'createdBy', 'createdAt', 'done', 'doneBy', 'doneAt'])
+        && request.resource.data.chatId is string
+        && request.resource.data.chatId.size() > 0
+        && request.resource.data.chatId.size() <= 64
+        && request.resource.data.ct is string
+        && request.resource.data.ct.size() <= 20000
+        && request.resource.data.iv is string
+        && request.resource.data.iv.size() == 16
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.done == false
+        && request.resource.data.doneBy == null
+        && request.resource.data.doneAt == null;
+      allow update: if isMember()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['done', 'doneBy', 'doneAt'])
+        && ((request.resource.data.done == true
+              && request.resource.data.doneBy == request.auth.uid
+              && request.resource.data.doneAt == request.time)
+            || (request.resource.data.done == false
+              && request.resource.data.doneBy == null
+              && request.resource.data.doneAt == null));
+      allow delete: if false;
     }
 
     // Archivos: trozos cifrados de hasta ~900 KB. No se editan ni se borran.

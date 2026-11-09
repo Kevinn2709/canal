@@ -3,11 +3,11 @@
 /**
  * Shell.tsx — Estructura de la app ya desbloqueada.
  *
- * - Computadora: lista de conversaciones a la izquierda y la conversación
- *   abierta a la derecha.
- * - Teléfono: primero la lista; al abrir una conversación ocupa la pantalla y
- *   el botón "atrás" (o el gesto del sistema) vuelve a la lista.
- * - La conversación abierta va en la URL (#c=id) para que "atrás" funcione.
+ * - Computadora: lista de conversaciones a la izquierda y, a la derecha, la
+ *   conversación abierta o la vista de todos los pendientes.
+ * - Teléfono: primero la lista; lo que se abre ocupa la pantalla y "atrás"
+ *   (botón o gesto del sistema) vuelve a la lista.
+ * - Lo abierto va en la URL (#c=id o #pendientes) para que "atrás" funcione.
  * - El título de la pestaña muestra cuántas conversaciones tienen mensajes
  *   sin leer.
  */
@@ -22,42 +22,47 @@ import { useWorkspace } from "@/hooks/useWorkspace";
 import { Sidebar } from "./Sidebar";
 import { ChatView } from "./ChatView";
 import { ChatDialog } from "./ChatDialog";
+import { AllTasks } from "./Tasks";
 import { LockIcon } from "./Icons";
 
 type Dialog = { mode: "create" } | { mode: "edit"; chat: ChatInfo } | null;
+type View = { type: "chat"; id: string } | { type: "tasks" } | null;
 
-function chatIdFromHash(): string | null {
-  const match = window.location.hash.match(/^#c=([A-Za-z0-9_-]+)$/);
-  return match ? match[1] : null;
+function viewFromHash(): View {
+  const hash = window.location.hash;
+  if (hash === "#pendientes") return { type: "tasks" };
+  const match = hash.match(/^#c=([A-Za-z0-9_-]+)$/);
+  return match ? { type: "chat", id: match[1] } : null;
 }
 
 export function Shell({ user, cryptoKey }: { user: User; cryptoKey: CryptoKey }) {
   const ws = useWorkspace(user.uid, cryptoKey);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [view, setView] = useState<View>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const pushedHash = useRef(false);
 
   useEffect(() => {
-    const read = () => setSelectedId(chatIdFromHash());
+    const read = () => setView(viewFromHash());
     read();
     window.addEventListener("hashchange", read);
     return () => window.removeEventListener("hashchange", read);
   }, []);
 
-  // Lista -> conversación: nueva entrada en el historial (para que "atrás"
-  // vuelva a la lista). Conversación -> otra conversación: se reemplaza, así
-  // "atrás" sigue llevando a la lista y no a la conversación anterior.
-  const select = useCallback((id: string) => {
-    const current = chatIdFromHash();
-    if (current === id) return;
-    if (current) {
-      window.history.replaceState(null, "", `#c=${id}`);
-      setSelectedId(id);
+  // Desde la lista: nueva entrada en el historial (para que "atrás" vuelva a
+  // la lista). Desde otra vista: se reemplaza, así "atrás" sigue llevando a la
+  // lista y no a la vista anterior.
+  const go = useCallback((hash: string) => {
+    if (window.location.hash === hash) return;
+    if (viewFromHash()) {
+      window.history.replaceState(null, "", hash);
+      setView(viewFromHash());
     } else {
       pushedHash.current = true;
-      window.location.hash = `c=${id}`;
+      window.location.hash = hash;
     }
   }, []);
+
+  const select = useCallback((id: string) => go(`#c=${id}`), [go]);
 
   const back = useCallback(() => {
     if (pushedHash.current) {
@@ -65,7 +70,7 @@ export function Shell({ user, cryptoKey }: { user: User; cryptoKey: CryptoKey })
       window.history.back();
     } else {
       window.history.replaceState(null, "", window.location.pathname + window.location.search);
-      setSelectedId(null);
+      setView(null);
     }
   }, []);
 
@@ -82,7 +87,12 @@ export function Shell({ user, cryptoKey }: { user: User; cryptoKey: CryptoKey })
   };
 
   const groups = Array.from(new Set((ws.chats ?? []).map((c) => c.group)));
-  const selected = ws.chats?.find((c) => c.id === selectedId) ?? null;
+  const selected = view?.type === "chat" ? ws.chats?.find((c) => c.id === view.id) ?? null : null;
+  const showingTasks = view?.type === "tasks";
+  const somethingOpen = !!selected || showingTasks;
+
+  const taskCounts: Record<string, number> = {};
+  for (const t of ws.openTasks) taskCounts[t.chatId] = (taskCounts[t.chatId] ?? 0) + 1;
 
   const submitDialog = async (meta: ChatMeta) => {
     const { db } = getFirebase();
@@ -122,20 +132,23 @@ export function Shell({ user, cryptoKey }: { user: User; cryptoKey: CryptoKey })
   return (
     <div className="flex h-dvh bg-neutral-950 text-neutral-100">
       <aside
-        className={`${selected ? "hidden md:flex" : "flex"} w-full shrink-0 flex-col border-neutral-900 md:w-80 md:border-r`}
+        className={`${somethingOpen ? "hidden md:flex" : "flex"} w-full shrink-0 flex-col border-neutral-900 md:w-80 md:border-r`}
       >
         <Sidebar
           chats={ws.chats}
           selectedId={selected?.id ?? null}
+          tasksSelected={showingTasks}
+          taskCounts={taskCounts}
           email={user.email ?? ""}
           isUnread={ws.isUnread}
           onSelect={select}
+          onOpenTasks={() => go("#pendientes")}
           onCreate={() => setDialog({ mode: "create" })}
           onLogout={() => void logout()}
         />
       </aside>
 
-      <main className={`${selected ? "flex" : "hidden md:flex"} min-w-0 flex-1 flex-col`}>
+      <main className={`${somethingOpen ? "flex" : "hidden md:flex"} min-w-0 flex-1 flex-col`}>
         {selected ? (
           <ChatView
             key={selected.id}
@@ -143,11 +156,14 @@ export function Shell({ user, cryptoKey }: { user: User; cryptoKey: CryptoKey })
             user={user}
             cryptoKey={cryptoKey}
             otherRead={ws.otherReads[selected.id] ?? null}
+            openTasks={ws.openTasks.filter((t) => t.chatId === selected.id)}
             onMarkRead={ws.markRead}
             onBack={back}
             onEdit={() => setDialog({ mode: "edit", chat: selected })}
             onToggleArchive={() => toggleArchive(selected)}
           />
+        ) : showingTasks ? (
+          <AllTasks tasks={ws.openTasks} chats={ws.chats} uid={user.uid} onOpenChat={select} onBack={back} />
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 text-sm text-neutral-500">
             <LockIcon className="h-6 w-6" />

@@ -26,19 +26,14 @@ function imageBox(file: FileInfo): { width: number; height: number } {
   return { width: Math.round(w * scale), height: Math.round(h * scale) };
 }
 
-export function ImageAttachment({
-  file,
-  cryptoKey,
-  onOpen,
-}: {
-  file: FileInfo;
-  cryptoKey: CryptoKey;
-  onOpen: (file: FileInfo, url: string) => void;
-}) {
-  const ref = useRef<HTMLButtonElement>(null);
+/** Descarga y descifra el archivo cuando el elemento aparece en pantalla. */
+function useLazyFileUrl(
+  ref: { readonly current: HTMLElement | null },
+  file: FileInfo,
+  cryptoKey: CryptoKey
+) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
-  const box = imageBox(file);
 
   useEffect(() => {
     const el = ref.current;
@@ -69,7 +64,23 @@ export function ImageAttachment({
       cancelled = true;
       observer.disconnect();
     };
-  }, [file, cryptoKey]);
+  }, [ref, file, cryptoKey]);
+
+  return { url, failed };
+}
+
+export function ImageAttachment({
+  file,
+  cryptoKey,
+  onOpen,
+}: {
+  file: FileInfo;
+  cryptoKey: CryptoKey;
+  onOpen: (file: FileInfo, url: string) => void;
+}) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const { url, failed } = useLazyFileUrl(ref, file, cryptoKey);
+  const box = imageBox(file);
 
   return (
     <button
@@ -88,6 +99,27 @@ export function ImageAttachment({
         </span>
       )}
     </button>
+  );
+}
+
+const STICKER_MAX = 150;
+
+export function StickerAttachment({ file, cryptoKey }: { file: FileInfo; cryptoKey: CryptoKey }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const { url, failed } = useLazyFileUrl(ref, file, cryptoKey);
+  const w = file.w ?? 1;
+  const h = file.h ?? 1;
+  const scale = Math.min(STICKER_MAX / w, STICKER_MAX / h);
+  return (
+    <div ref={ref} style={{ width: Math.round(w * scale), height: Math.round(h * scale) }}>
+      {url ? (
+        <img src={url} alt="sticker" className="h-full w-full object-contain" />
+      ) : (
+        <span className="flex h-full w-full items-center justify-center rounded-xl bg-neutral-800/50 text-[10px] text-neutral-500">
+          {failed ? "Sticker no disponible" : ""}
+        </span>
+      )}
+    </div>
   );
 }
 

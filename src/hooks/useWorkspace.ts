@@ -6,6 +6,7 @@
  *   ya existía).
  * - Escucha users/{uid}: guarda hasta cuándo leyó cada uno cada conversación.
  *   Con eso se calculan los no leídos propios y el "visto" del otro.
+ * - Escucha los pendientes abiertos de todas las conversaciones.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -13,11 +14,14 @@ import {
   collection,
   doc,
   onSnapshot,
+  query,
   serverTimestamp,
   setDoc,
+  where,
   type Timestamp,
 } from "firebase/firestore";
 import { getFirebase } from "@/lib/firebase";
+import { decryptTask, type Task } from "@/lib/tasks";
 import {
   GENERAL_CHAT_ID,
   createChat,
@@ -40,6 +44,7 @@ export interface Workspace {
   otherReads: ReadMap;
   isUnread: (chat: ChatInfo) => boolean;
   markRead: (chatId: string) => void;
+  openTasks: Task[]; // pendientes sin hacer, de todas las conversaciones
 }
 
 export function useWorkspace(uid: string, cryptoKey: CryptoKey): Workspace {
@@ -51,6 +56,36 @@ export function useWorkspace(uid: string, cryptoKey: CryptoKey): Workspace {
   const creatingGeneral = useRef(false);
   const snapshotSeq = useRef(0);
   const [fromServer, setFromServer] = useState(false);
+  const [openTasks, setOpenTasks] = useState<Task[]>([]);
+  const taskCache = useRef(new Map<string, Task>()); // por id+ct+done
+  const taskSeq = useRef(0);
+
+  // Pendientes abiertos.
+  useEffect(() => {
+    const { db } = getFirebase();
+    return onSnapshot(
+      query(collection(db, "tasks"), where("done", "==", false)),
+      (snap) => {
+        const current = ++taskSeq.current;
+        void Promise.all(
+          snap.docs.map(async (d) => {
+            const data = d.data({ serverTimestamps: "estimate" });
+            const cacheKey = `${d.id}:${String(data.ct)}:${String(data.done)}`;
+            const cached = taskCache.current.get(cacheKey);
+            if (cached) return cached;
+            const task = await decryptTask(cryptoKey, d.id, data);
+            taskCache.current.set(cacheKey, task);
+            return task;
+          })
+        ).then((list) => {
+          if (current !== taskSeq.current) return;
+          list.sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0));
+          setOpenTasks(list);
+        });
+      },
+      () => undefined
+    );
+  }, [cryptoKey]);
 
   // Conversaciones.
   useEffect(() => {
@@ -159,7 +194,7 @@ export function useWorkspace(uid: string, cryptoKey: CryptoKey): Workspace {
   );
 
   return useMemo(
-    () => ({ chats, error, myReads, otherReads, isUnread, markRead }),
-    [chats, error, myReads, otherReads, isUnread, markRead]
+    () => ({ chats, error, myReads, otherReads, isUnread, markRead, openTasks }),
+    [chats, error, myReads, otherReads, isUnread, markRead, openTasks]
   );
 }
