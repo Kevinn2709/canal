@@ -122,6 +122,36 @@ export async function decryptText(
   return decoder.decode(plain);
 }
 
+/** Cifra bytes (trozos de archivos). Devuelve el IV en base64 y los bytes cifrados. */
+export async function encryptBytes(
+  key: CryptoKey,
+  data: Uint8Array,
+  aad: string
+): Promise<{ iv: string; data: Uint8Array<ArrayBuffer> }> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: encoder.encode(aad) },
+    key,
+    new Uint8Array(data)
+  );
+  return { iv: bytesToBase64(iv), data: new Uint8Array(ct) };
+}
+
+/** Descifra bytes. Lanza un error si la llave no corresponde o si fueron alterados. */
+export async function decryptBytes(
+  key: CryptoKey,
+  ivB64: string,
+  data: Uint8Array,
+  aad: string
+): Promise<Uint8Array<ArrayBuffer>> {
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToBytes(ivB64), additionalData: encoder.encode(aad) },
+    key,
+    new Uint8Array(data)
+  );
+  return new Uint8Array(plain);
+}
+
 /** Datos adicionales autenticados de un mensaje: ligan el texto a su remitente. */
 export function messageAad(uid: string): string {
   return `canal:msg:${uid}`;

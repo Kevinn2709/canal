@@ -11,7 +11,9 @@ const csp = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""} https://apis.google.com`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
+  // blob: para mostrar fotos, videos y audios ya descifrados en el dispositivo.
+  "img-src 'self' data: blob:",
+  "media-src 'self' blob:",
   "font-src 'self'",
   `connect-src 'self' https://*.googleapis.com${isDev ? " ws:" : ""}`,
   "frame-src https://*.firebaseapp.com",

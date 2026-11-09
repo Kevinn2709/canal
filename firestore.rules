@@ -15,9 +15,23 @@ service cloud.firestore {
         && request.auth.uid in ['53RqgaavXfZDCd0Ln00OMwGlGnF2', 'cqjDflCzPyb1gYwU7EklOpYVSk02'];
     }
 
+    // Un mensaje: solo texto cifrado, a nombre de quien lo envía.
+    function validMessage() {
+      let d = request.resource.data;
+      return d.keys().hasAll(['ct', 'iv', 'uid', 'createdAt'])
+        && d.keys().hasOnly(['ct', 'iv', 'uid', 'createdAt', 'v'])
+        && d.uid == request.auth.uid
+        && d.ct is string
+        && d.ct.size() > 0
+        && d.ct.size() <= 20000
+        && d.iv is string
+        && d.iv.size() == 16
+        && d.createdAt == request.time
+        && (!d.keys().hasAny(['v']) || d.v == 2);
+    }
+
     // Datos públicos del cifrado: la sal y la prueba de verificación de la
-    // frase. No contienen la frase ni la llave. Se crea una sola vez y nunca
-    // se puede cambiar desde la app.
+    // frase. No contienen la frase ni la llave. Se crea una sola vez.
     match /meta/crypto {
       allow read: if isMember();
       allow create: if isMember()
@@ -37,20 +51,78 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // Mensajes: solo texto cifrado. Solo ustedes dos leen y escriben, cada
-    // uno a su nombre, y nada se edita ni se borra desde la app.
+    // Conversación "General": el historial original.
     match /messages/{messageId} {
       allow read: if isMember();
+      allow create: if isMember() && validMessage();
+      allow update, delete: if false;
+    }
+
+    // Conversaciones. El nombre y el proyecto van cifrados (metaIv, metaCt).
+    // Se pueden renombrar, archivar y marcar la hora del último mensaje,
+    // pero nunca borrar.
+    match /chats/{chatId} {
+      allow read: if isMember();
       allow create: if isMember()
-        && request.resource.data.keys().hasOnly(['ct', 'iv', 'uid', 'createdAt'])
-        && request.resource.data.uid == request.auth.uid
-        && request.resource.data.ct is string
-        && request.resource.data.ct.size() > 0
-        && request.resource.data.ct.size() <= 20000
+        && request.resource.data.keys().hasOnly(
+             ['metaIv', 'metaCt', 'createdBy', 'createdAt', 'lastMessageAt',
+              'lastMessageBy', 'archived'])
+        && request.resource.data.metaIv is string
+        && request.resource.data.metaIv.size() == 16
+        && request.resource.data.metaCt is string
+        && request.resource.data.metaCt.size() <= 2000
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.lastMessageAt == request.time
+        && request.resource.data.lastMessageBy == request.auth.uid
+        && request.resource.data.archived == false;
+      allow update: if isMember() && (
+        (request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['lastMessageAt', 'lastMessageBy'])
+          && request.resource.data.lastMessageAt == request.time
+          && request.resource.data.lastMessageBy == request.auth.uid)
+        || (request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['metaIv', 'metaCt'])
+          && request.resource.data.metaIv is string
+          && request.resource.data.metaIv.size() == 16
+          && request.resource.data.metaCt is string
+          && request.resource.data.metaCt.size() <= 2000)
+        || (request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['archived'])
+          && request.resource.data.archived is bool)
+      );
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if isMember();
+        allow create: if isMember() && validMessage();
+        allow update, delete: if false;
+      }
+    }
+
+    // Archivos: trozos cifrados de hasta ~900 KB. No se editan ni se borran.
+    match /files/{fileId}/chunks/{chunkId} {
+      allow read: if isMember();
+      allow create: if isMember()
+        && request.resource.data.keys().hasOnly(['data', 'iv', 'uid', 'createdAt'])
+        && request.resource.data.data is bytes
+        && request.resource.data.data.size() <= 1000000
         && request.resource.data.iv is string
         && request.resource.data.iv.size() == 16
+        && request.resource.data.uid == request.auth.uid
         && request.resource.data.createdAt == request.time;
       allow update, delete: if false;
+    }
+
+    // Hasta dónde leyó cada uno cada conversación (no leídos y "visto").
+    // Cada quien solo escribe el suyo.
+    match /users/{userId} {
+      allow read: if isMember();
+      allow create, update: if isMember()
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['lastRead'])
+        && request.resource.data.lastRead is map;
+      allow delete: if false;
     }
 
     // Todo lo demás de la base de datos queda cerrado.

@@ -27,6 +27,18 @@ No hace falta ningún servidor propio (ni Render).
    escribir a esas dos cuentas, y prohíben editar o borrar mensajes.
 6. **Recordar en este dispositivo** (opcional): guarda la llave (no la frase)
    en el navegador para no escribir la frase cada vez. "Cerrar sesión" la borra.
+7. **Conversaciones por proyecto:** se pueden crear varias conversaciones y
+   agruparlas por proyecto (Trabajo, Personal o el nombre que quieran). Se
+   pueden renombrar, mover de proyecto y archivar; nunca borrar. El nombre y el
+   proyecto también van cifrados. El historial anterior está en "General".
+8. **Fotos y archivos:** con el clip, pegando (Ctrl+V) o arrastrando al chat.
+   Las fotos se comprimen a 1920 px antes de enviarse. Todo se cifra en el
+   dispositivo y se guarda en Firestore en trozos de 900 KB (el plan gratis de
+   Firebase no incluye Cloud Storage). Las fotos se descargan solo cuando
+   aparecen en pantalla; los videos y audios, al pulsar reproducir.
+9. **No leídos y "visto":** un punto azul marca las conversaciones con
+   mensajes nuevos, y el título de la pestaña dice cuántas son. Tu último
+   mensaje dice "visto" cuando el otro ya lo leyó.
 
 ## Qué protege y qué no
 
@@ -43,8 +55,9 @@ No protege contra:
 
 - **Un teléfono desbloqueado** con la sesión iniciada y la llave recordada, o
   alguien que conozca la frase.
-- **Metadatos:** en la consola se ve quién escribió, cuándo y más o menos qué
-  tan largo es cada mensaje (no su contenido).
+- **Metadatos:** en la consola se ve quién escribió, cuándo, cuántas
+  conversaciones hay, cuándo se leyó cada una y más o menos qué tan largo es
+  cada mensaje o archivo (no su contenido ni su nombre).
 - **Cambios al código de la web:** quien controle tu cuenta de GitHub o de
   Vercel podría modificar la página para capturar la frase. Activa la
   verificación en dos pasos en GitHub, Vercel y Google.
@@ -61,11 +74,30 @@ No protege contra:
 
 ## Límites del plan gratis
 
-Firestore en el plan Spark incluye 50 000 lecturas y 20 000 escrituras al día.
-Cada vez que se abre el chat se leen hasta 200 mensajes, y cada mensaje nuevo
-cuenta como una escritura y una lectura por cada persona conectada. Para dos
-personas sobra. Si algún día se superara, Firebase deja de responder hasta el
-día siguiente; no cobra nada.
+Firestore en el plan Spark incluye 1 GiB guardado, 10 GiB de descarga al mes,
+50 000 lecturas y 20 000 escrituras al día. Si se supera un límite, Firebase
+deja de responder hasta el día (o mes) siguiente; no cobra nada.
+
+- **Mensajes:** para dos personas sobra. Abrir una conversación lee hasta 200
+  mensajes.
+- **Archivos:** máximo 10 MB cada uno. Una foto comprimida ocupa unos cientos
+  de KB, así que en 1 GiB caben miles; los archivos grandes y los videos gastan
+  el espacio mucho más rápido.
+- Si algún día necesitan más espacio, Firebase Cloud Storage da 5 GB sin costo,
+  pero exige el plan Blaze (con tarjeta).
+
+## Actualizar desde la versión anterior
+
+El historial no se pierde: queda en la conversación "General".
+
+1. **Primero las reglas:** en Firebase → Firestore Database → Reglas, pega el
+   nuevo `firestore.rules`, pon sus dos UID y publica. Las reglas nuevas
+   siguen aceptando la versión anterior de la web, así que no se rompe nada
+   mientras actualizas.
+2. **Luego el código:** en GitHub borra `src/components/Chat.tsx` y sube el
+   contenido de esta carpeta. Este paquete no trae `firebase-config.ts`, así
+   que tu configuración se conserva.
+3. Vercel redespliega solo. Recarguen la web en ambos dispositivos.
 
 ## Instalación
 
@@ -126,6 +158,11 @@ día siguiente; no cobra nada.
   Users.
 - **"Tu cuenta no tiene acceso a la conversación"**: el UID de esa cuenta no
   está bien escrito en las reglas (paso 5), o las reglas no se publicaron.
+- **"Sin permiso para leer las conversaciones"**: faltan las reglas nuevas.
+  Publica el `firestore.rules` de esta versión con sus UID.
+- **Una foto del iPhone llega como archivo y no como foto**: el navegador no
+  pudo leer el formato (HEIC). Al elegirla desde la fototeca, el iPhone
+  normalmente la convierte a JPG; si no, se envía como archivo descargable.
 - **"La frase no coincide"**: es otra frase, no un problema de mayúsculas o
   acentos. Confírmenla palabra por palabra.
 - **Mensajes marcados "sin cifrar"**: se escribieron con una versión anterior.

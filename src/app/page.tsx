@@ -4,7 +4,7 @@
  * page.tsx — Encadena las pantallas:
  *   sin sesión -> Login
  *   con sesión, sin llave -> Unlock (frase de cifrado)
- *   con sesión y llave -> Chat
+ *   con sesión y llave -> Shell (conversaciones)
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -12,7 +12,7 @@ import { onAuthStateChanged, type User } from "firebase/auth";
 import { getFirebase, isConfigured } from "@/lib/firebase";
 import { Login } from "@/components/Login";
 import { Unlock } from "@/components/Unlock";
-import { Chat } from "@/components/Chat";
+import { Shell } from "@/components/Shell";
 
 export default function Page() {
   const [configured, setConfigured] = useState(true);
@@ -60,5 +60,5 @@ export default function Page() {
 
   if (!user) return <Login />;
   if (!cryptoKey) return <Unlock user={user} onUnlock={setCryptoKey} />;
-  return <Chat user={user} cryptoKey={cryptoKey} />;
+  return <Shell user={user} cryptoKey={cryptoKey} />;
 }
