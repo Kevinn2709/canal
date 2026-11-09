@@ -1,0 +1,61 @@
+rules_version = '2';
+
+// Reglas de seguridad de Firestore para el chat cifrado.
+//
+// 1) Reemplaza UID_TUYO y UID_DE_TU_SOCIO por los UID reales de las dos
+//    cuentas (Firebase -> Authentication -> Users -> columna "User UID").
+// 2) Pega este archivo completo en Firebase -> Firestore Database -> Rules
+//    y pulsa "Publish".
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isMember() {
+      return request.auth != null
+        && request.auth.uid in ['UID_TUYO', 'UID_DE_TU_SOCIO'];
+    }
+
+    // Datos públicos del cifrado: la sal y la prueba de verificación de la
+    // frase. No contienen la frase ni la llave. Se crea una sola vez y nunca
+    // se puede cambiar desde la app.
+    match /meta/crypto {
+      allow read: if isMember();
+      allow create: if isMember()
+        && request.resource.data.keys().hasOnly(
+             ['salt', 'iterations', 'checkIv', 'checkCt', 'createdBy', 'createdAt'])
+        && request.resource.data.salt is string
+        && request.resource.data.salt.size() == 24
+        && request.resource.data.iterations is number
+        && request.resource.data.iterations >= 100000
+        && request.resource.data.iterations <= 10000000
+        && request.resource.data.checkIv is string
+        && request.resource.data.checkIv.size() == 16
+        && request.resource.data.checkCt is string
+        && request.resource.data.checkCt.size() < 200
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // Mensajes: solo texto cifrado. Solo ustedes dos leen y escriben, cada
+    // uno a su nombre, y nada se edita ni se borra desde la app.
+    match /messages/{messageId} {
+      allow read: if isMember();
+      allow create: if isMember()
+        && request.resource.data.keys().hasOnly(['ct', 'iv', 'uid', 'createdAt'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.ct is string
+        && request.resource.data.ct.size() > 0
+        && request.resource.data.ct.size() <= 20000
+        && request.resource.data.iv is string
+        && request.resource.data.iv.size() == 16
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // Todo lo demás de la base de datos queda cerrado.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
