@@ -19,7 +19,7 @@ service cloud.firestore {
     }
 
     function others() {
-      return ['daNRBtWOCIYP3XTSpoHca8yKaYL2', 'UID_MIEMBRO_4'];
+      return ['daNRBtWOCIYP3XTSpoHca8yKaYL2', 'IVXTIt6DWgcWLa97ufOOjCmSWQ22', 'sXOPC7jKI8SlSM2pNn72c5vq9903'];
     }
 
     function signedIn() {
