@@ -1,4 +1,4 @@
-/** useStickers.ts — Biblioteca de stickers en vivo, descifrada. */
+/** useStickers.ts — Biblioteca de stickers (compartida por todos) en vivo, descifrada. */
 
 import { useEffect, useRef, useState } from "react";
 import { collection, onSnapshot, type Timestamp } from "firebase/firestore";
@@ -6,7 +6,7 @@ import { getFirebase } from "@/lib/firebase";
 import { decryptSticker, type Sticker } from "@/lib/stickers";
 import type { FileInfo } from "@/lib/chats";
 
-export function useStickers(cryptoKey: CryptoKey): Sticker[] | null {
+export function useStickers(ws: CryptoKey): Sticker[] | null {
   const [stickers, setStickers] = useState<Sticker[] | null>(null);
   const cache = useRef(new Map<string, FileInfo | null>());
   const seq = useRef(0);
@@ -14,7 +14,7 @@ export function useStickers(cryptoKey: CryptoKey): Sticker[] | null {
   useEffect(() => {
     const { db } = getFirebase();
     return onSnapshot(
-      collection(db, "stickers"),
+      collection(db, "library"),
       (snap) => {
         const current = ++seq.current;
         void Promise.all(
@@ -25,7 +25,7 @@ export function useStickers(cryptoKey: CryptoKey): Sticker[] | null {
             const iv = typeof data.iv === "string" ? data.iv : "";
             let file = cache.current.get(d.id);
             if (file === undefined) {
-              file = await decryptSticker(cryptoKey, d.id, { iv, ct });
+              file = await decryptSticker(ws, d.id, { iv, ct });
               cache.current.set(d.id, file);
             }
             if (!file) return null;
@@ -46,7 +46,7 @@ export function useStickers(cryptoKey: CryptoKey): Sticker[] | null {
       },
       () => setStickers([])
     );
-  }, [cryptoKey]);
+  }, [ws]);
 
   return stickers;
 }

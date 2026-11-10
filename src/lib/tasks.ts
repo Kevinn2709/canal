@@ -1,10 +1,11 @@
 /**
  * tasks.ts — Pendientes de cada conversación.
  *
- * tasks/{id}: el texto del pendiente (y el mensaje del que salió, si aplica)
- * va cifrado. A la vista quedan solo la conversación a la que pertenece y si
- * está hecho. Los pendientes se marcan como hechos o se reabren; nunca se
- * borran.
+ * chats/{chatId}/tasks/{id} (conversaciones nuevas) o tasks/{id} (las de
+ * antes): el texto del pendiente (y el mensaje del que salió, si aplica) va
+ * cifrado con la llave de la conversación. A la vista quedan solo la
+ * conversación a la que pertenece y si está hecho. Los pendientes se marcan
+ * como hechos o se reabren; nunca se borran.
  */
 
 import {
@@ -13,6 +14,7 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
+  type CollectionReference,
   type Firestore,
   type Timestamp,
 } from "firebase/firestore";
@@ -42,15 +44,23 @@ function toDate(value: unknown): Date | null {
   return ts && typeof ts.toDate === "function" ? ts.toDate() : null;
 }
 
+type ChatRef = { id: string; legacy: boolean };
+
+/** Dónde viven los pendientes de una conversación. */
+export function tasksCollection(db: Firestore, chat: ChatRef): CollectionReference {
+  return chat.legacy ? collection(db, "tasks") : collection(db, "chats", chat.id, "tasks");
+}
+
 export async function createTask(
   db: Firestore,
   key: CryptoKey,
   uid: string,
-  chatId: string,
+  chat: ChatRef,
   text: string,
   msgId?: string
 ): Promise<void> {
-  const ref = doc(collection(db, "tasks"));
+  const chatId = chat.id;
+  const ref = doc(tasksCollection(db, chat));
   const body = { text: text.trim().slice(0, MAX_TASK_LENGTH), ...(msgId ? { msgId } : {}) };
   const sealed = await encryptText(key, JSON.stringify(body), taskAad(ref.id, chatId));
   await setDoc(ref, {
@@ -67,12 +77,13 @@ export async function createTask(
 
 export async function setTaskDone(
   db: Firestore,
+  chat: ChatRef,
   taskId: string,
   uid: string,
   done: boolean
 ): Promise<void> {
   await updateDoc(
-    doc(db, "tasks", taskId),
+    doc(tasksCollection(db, chat), taskId),
     done
       ? { done: true, doneBy: uid, doneAt: serverTimestamp() }
       : { done: false, doneBy: null, doneAt: null }

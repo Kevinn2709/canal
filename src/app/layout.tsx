@@ -6,6 +6,9 @@ export const metadata: Metadata = {
   title: "Chat",
   description: "",
   robots: { index: false, follow: false }, // privado: que no lo indexen buscadores
+  manifest: "/manifest.webmanifest",
+  appleWebApp: { capable: true, title: "Chat", statusBarStyle: "black-translucent" },
+  icons: { icon: "/favicon-32.png", apple: "/apple-touch-icon.png" },
 };
 
 export const viewport: Viewport = {

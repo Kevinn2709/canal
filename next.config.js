@@ -1,8 +1,9 @@
 /**
  * next.config.js — Headers de seguridad.
  *
- * El CSP permite conexiones solo a este sitio y a los servicios de Google que
- * usa Firebase (Authentication y Firestore).
+ * El CSP permite conexiones solo a este sitio (incluida /api/notify) y a los
+ * servicios de Google que usa Firebase (Authentication y Firestore). El
+ * service worker (/sw.js) y el manifest se sirven desde este mismo sitio.
  */
 
 const isDev = process.env.NODE_ENV !== "production";
@@ -17,6 +18,8 @@ const csp = [
   "font-src 'self'",
   `connect-src 'self' https://*.googleapis.com${isDev ? " ws:" : ""}`,
   "frame-src https://*.firebaseapp.com",
+  "worker-src 'self'",
+  "manifest-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
@@ -40,6 +43,11 @@ const nextConfig = {
             value: "geolocation=(), microphone=(self), camera=()",
           },
         ],
+      },
+      {
+        // El service worker siempre fresco: así cada versión nueva se aplica.
+        source: "/sw.js",
+        headers: [{ key: "Cache-Control", value: "no-cache" }],
       },
     ];
   },

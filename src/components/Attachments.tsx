@@ -12,7 +12,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FileInfo } from "@/lib/chats";
 import { isAudio, isVideo } from "@/lib/chats";
-import { downloadFile, formatSize, getFileUrl } from "@/lib/files";
+import { downloadFile, formatSize, getFileUrl, type FileStore } from "@/lib/files";
 import { getFirebase } from "@/lib/firebase";
 import { CloseIcon, DownloadIcon, FileIcon, PlayIcon } from "./Icons";
 
@@ -27,11 +27,7 @@ function imageBox(file: FileInfo): { width: number; height: number } {
 }
 
 /** Descarga y descifra el archivo cuando el elemento aparece en pantalla. */
-function useLazyFileUrl(
-  ref: { readonly current: HTMLElement | null },
-  file: FileInfo,
-  cryptoKey: CryptoKey
-) {
+function useLazyFileUrl(ref: { readonly current: HTMLElement | null }, file: FileInfo, store: FileStore) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -40,7 +36,7 @@ function useLazyFileUrl(
     if (!el) return;
     let cancelled = false;
     const load = () => {
-      getFileUrl(getFirebase().db, cryptoKey, file)
+      getFileUrl(getFirebase().db, store, file)
         .then((u) => !cancelled && setUrl(u))
         .catch(() => !cancelled && setFailed(true));
     };
@@ -64,22 +60,22 @@ function useLazyFileUrl(
       cancelled = true;
       observer.disconnect();
     };
-  }, [ref, file, cryptoKey]);
+  }, [ref, file, store.key, store.base.join("/")]);
 
   return { url, failed };
 }
 
 export function ImageAttachment({
   file,
-  cryptoKey,
+  store,
   onOpen,
 }: {
   file: FileInfo;
-  cryptoKey: CryptoKey;
+  store: FileStore;
   onOpen: (file: FileInfo, url: string) => void;
 }) {
   const ref = useRef<HTMLButtonElement>(null);
-  const { url, failed } = useLazyFileUrl(ref, file, cryptoKey);
+  const { url, failed } = useLazyFileUrl(ref, file, store);
   const box = imageBox(file);
 
   return (
@@ -104,9 +100,9 @@ export function ImageAttachment({
 
 const STICKER_MAX = 150;
 
-export function StickerAttachment({ file, cryptoKey }: { file: FileInfo; cryptoKey: CryptoKey }) {
+export function StickerAttachment({ file, store }: { file: FileInfo; store: FileStore }) {
   const ref = useRef<HTMLDivElement>(null);
-  const { url, failed } = useLazyFileUrl(ref, file, cryptoKey);
+  const { url, failed } = useLazyFileUrl(ref, file, store);
   const w = file.w ?? 1;
   const h = file.h ?? 1;
   const scale = Math.min(STICKER_MAX / w, STICKER_MAX / h);
@@ -123,13 +119,13 @@ export function StickerAttachment({ file, cryptoKey }: { file: FileInfo; cryptoK
   );
 }
 
-export function FileAttachment({ file, cryptoKey }: { file: FileInfo; cryptoKey: CryptoKey }) {
+export function FileAttachment({ file, store }: { file: FileInfo; store: FileStore }) {
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
 
   const download = async () => {
     setState("loading");
     try {
-      await downloadFile(getFirebase().db, cryptoKey, file);
+      await downloadFile(getFirebase().db, store, file);
       setState("idle");
     } catch {
       setState("error");
@@ -162,14 +158,14 @@ export function FileAttachment({ file, cryptoKey }: { file: FileInfo; cryptoKey:
   );
 }
 
-export function MediaAttachment({ file, cryptoKey }: { file: FileInfo; cryptoKey: CryptoKey }) {
+export function MediaAttachment({ file, store }: { file: FileInfo; store: FileStore }) {
   const [url, setUrl] = useState<string | null>(null);
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
 
   const load = async () => {
     setState("loading");
     try {
-      setUrl(await getFileUrl(getFirebase().db, cryptoKey, file));
+      setUrl(await getFileUrl(getFirebase().db, store, file));
       setState("idle");
     } catch {
       setState("error");
@@ -211,12 +207,12 @@ export function MediaAttachment({ file, cryptoKey }: { file: FileInfo; cryptoKey
 export function Lightbox({
   file,
   url,
-  cryptoKey,
+  store,
   onClose,
 }: {
   file: FileInfo;
   url: string;
-  cryptoKey: CryptoKey;
+  store: FileStore;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -237,7 +233,7 @@ export function Lightbox({
         <div className="flex shrink-0 gap-1">
           <button
             type="button"
-            onClick={() => void downloadFile(getFirebase().db, cryptoKey, file)}
+            onClick={() => void downloadFile(getFirebase().db, store, file)}
             className="rounded-full p-2 hover:bg-white/10"
             aria-label="Descargar"
           >

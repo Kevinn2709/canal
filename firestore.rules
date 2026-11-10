@@ -2,17 +2,49 @@ rules_version = '2';
 
 // Reglas de seguridad de Firestore para el chat cifrado.
 //
-// 1) Reemplaza UID_TUYO y UID_DE_TU_SOCIO por los UID reales de las dos
-//    cuentas (Firebase -> Authentication -> Users -> columna "User UID").
-// 2) Pega este archivo completo en Firebase -> Firestore Database -> Rules
-//    y pulsa "Publish".
+// 1) En founders() pon los UID de las dos cuentas originales (tú y tu socio).
+//    Son los únicos que pueden leer las conversaciones de antes.
+// 2) En others() pon los UID de los demás miembros (hasta los que quieras).
+//    Mientras no existan, deja los textos de ejemplo: no estorban.
+//    (Firebase -> Authentication -> Users -> columna "User UID".)
+// 3) Pega este archivo completo en Firebase -> Firestore Database -> Rules
+//    y pulsa "Publish". Cada vez que sumes a alguien, agrega su UID y vuelve
+//    a publicar.
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function founders() {
+      return ['53RqgaavXfZDCd0Ln00OMwGlGnF2', 'cqjDflCzPyb1gYwU7EklOpYVSk02'];
+    }
+
+    function others() {
+      return ['daNRBtWOCIYP3XTSpoHca8yKaYL2', 'UID_MIEMBRO_4'];
+    }
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isFounder() {
+      return signedIn() && request.auth.uid in founders();
+    }
+
     function isMember() {
-      return request.auth != null
-        && request.auth.uid in ['53RqgaavXfZDCd0Ln00OMwGlGnF2', 'cqjDflCzPyb1gYwU7EklOpYVSk02'];
+      return signedIn() && (request.auth.uid in founders() || request.auth.uid in others());
+    }
+
+    function allMembers() {
+      return founders().concat(others());
+    }
+
+    // ¿Puede usar esta conversación? Las nuevas tienen lista de miembros;
+    // las de antes (sin lista) son de los fundadores.
+    function canUseChat(chatId) {
+      let c = get(/databases/$(database)/documents/chats/$(chatId)).data;
+      return isMember()
+        && ((('members' in c) && request.auth.uid in c.members)
+            || (!('members' in c) && isFounder()));
     }
 
     // Un mensaje: solo texto cifrado, a nombre de quien lo envía.
@@ -30,11 +62,163 @@ service cloud.firestore {
         && (!d.keys().hasAny(['v']) || d.v == 2);
     }
 
-    // Datos públicos del cifrado: la sal y la prueba de verificación de la
-    // frase. No contienen la frase ni la llave. Se crea una sola vez.
-    match /meta/crypto {
+    // Un trozo de archivo cifrado (hasta ~900 KB).
+    function validChunk() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['data', 'iv', 'uid', 'createdAt'])
+        && d.data is bytes
+        && d.data.size() <= 1000000
+        && d.iv is string
+        && d.iv.size() == 16
+        && d.uid == request.auth.uid
+        && d.createdAt == request.time;
+    }
+
+    function validTask(chatId) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['chatId', 'ct', 'iv', 'createdBy', 'createdAt', 'done', 'doneBy', 'doneAt'])
+        && d.chatId == chatId
+        && d.ct is string
+        && d.ct.size() <= 20000
+        && d.iv is string
+        && d.iv.size() == 16
+        && d.createdBy == request.auth.uid
+        && d.createdAt == request.time
+        && d.done == false
+        && d.doneBy == null
+        && d.doneAt == null;
+    }
+
+    function validTaskUpdate() {
+      let d = request.resource.data;
+      return d.diff(resource.data).affectedKeys().hasOnly(['done', 'doneBy', 'doneAt'])
+        && ((d.done == true && d.doneBy == request.auth.uid && d.doneAt == request.time)
+            || (d.done == false && d.doneBy == null && d.doneAt == null));
+    }
+
+    // =====================================================================
+    // Cuentas
+    // =====================================================================
+
+    // Paquete privado de cada quien (cifrado con su frase personal).
+    // Solo su dueño lo lee y lo escribe.
+    match /keys/{userId} {
+      allow read: if isMember() && request.auth.uid == userId;
+      allow create, update: if isMember()
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['salt', 'iterations', 'iv', 'ct', 'updatedAt'])
+        && request.resource.data.salt is string
+        && request.resource.data.salt.size() == 24
+        && request.resource.data.iterations is number
+        && request.resource.data.iterations >= 100000
+        && request.resource.data.iterations <= 10000000
+        && request.resource.data.iv is string
+        && request.resource.data.iv.size() == 16
+        && request.resource.data.ct is string
+        && request.resource.data.ct.size() <= 20000
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    // Lo público de cada quien: llave pública, perfil cifrado, si es
+    // fundador y hasta dónde leyó cada chat. Cada quien solo escribe el suyo.
+    match /users/{userId} {
       allow read: if isMember();
-      allow create: if isMember()
+      allow create, update: if isMember()
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(
+             ['pub', 'founder', 'setupAt', 'profIv', 'profCt', 'lastRead', 'readCount'])
+        && (!('pub' in request.resource.data)
+            || (request.resource.data.pub is string && request.resource.data.pub.size() <= 400))
+        && (!('founder' in request.resource.data)
+            || request.resource.data.founder == false
+            || (request.resource.data.founder == true && isFounder()))
+        && (!('profIv' in request.resource.data)
+            || (request.resource.data.profIv is string && request.resource.data.profIv.size() == 16))
+        && (!('profCt' in request.resource.data)
+            || (request.resource.data.profCt is string && request.resource.data.profCt.size() <= 2000))
+        && (!('lastRead' in request.resource.data) || request.resource.data.lastRead is map)
+        && (!('readCount' in request.resource.data) || request.resource.data.readCount is map);
+      allow delete: if false;
+    }
+
+    // Foto de perfil, cifrada.
+    match /avatars/{userId} {
+      allow read: if isMember();
+      allow create, update: if isMember()
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['iv', 'data', 'updatedAt'])
+        && request.resource.data.iv is string
+        && request.resource.data.iv.size() == 16
+        && request.resource.data.data is bytes
+        && request.resource.data.data.size() <= 300000
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    // Aprobación: la llave del espacio que un miembro le pasa (cifrada solo
+    // para él) a otro. Nadie se la puede dar a sí mismo.
+    match /wraps/{userId} {
+      allow read: if isMember();
+      allow create, update: if isMember()
+        && request.auth.uid != userId
+        && userId in allMembers()
+        && request.resource.data.keys().hasOnly(['from', 'fp', 'iv', 'ct', 'at'])
+        && request.resource.data.from == request.auth.uid
+        && request.resource.data.fp is string
+        && request.resource.data.fp.size() == 64
+        && request.resource.data.iv is string
+        && request.resource.data.iv.size() == 16
+        && request.resource.data.ct is string
+        && request.resource.data.ct.size() <= 1000
+        && request.resource.data.at == request.time;
+      allow delete: if false;
+    }
+
+    // Suscripciones push de cada quien y chats silenciados. Los demás
+    // miembros las leen (para avisarle); solo el dueño las cambia.
+    match /push/{userId} {
+      allow read: if isMember();
+      allow create, update: if isMember()
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['subs', 'muted'])
+        && request.resource.data.subs is map
+        && request.resource.data.subs.size() <= 20
+        && request.resource.data.muted is list
+        && request.resource.data.muted.size() <= 200;
+      allow delete: if false;
+    }
+
+    // Chats fijados de cada quien. Privado.
+    match /prefs/{userId} {
+      allow read: if isMember() && request.auth.uid == userId;
+      allow create, update: if isMember()
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['pinned', 'updatedAt'])
+        && request.resource.data.pinned is list
+        && request.resource.data.pinned.size() <= 50
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    // La llave del espacio cifrada con la llave anterior (solo fundadores).
+    match /meta/space {
+      allow read: if isFounder();
+      allow create: if isFounder()
+        && request.resource.data.keys().hasOnly(['iv', 'ct', 'createdBy', 'createdAt'])
+        && request.resource.data.iv is string
+        && request.resource.data.iv.size() <= 16
+        && request.resource.data.ct is string
+        && request.resource.data.ct.size() <= 200
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // Datos de la frase compartida de la versión anterior (solo fundadores).
+    match /meta/crypto {
+      allow read: if isFounder();
+      allow create: if isFounder()
         && request.resource.data.keys().hasOnly(
              ['salt', 'iterations', 'checkIv', 'checkCt', 'createdBy', 'createdAt'])
         && request.resource.data.salt is string
@@ -51,22 +235,33 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // Conversación "General": el historial original.
-    match /messages/{messageId} {
-      allow read: if isMember();
-      allow create: if isMember() && validMessage();
-      allow update, delete: if false;
-    }
+    // =====================================================================
+    // Conversaciones
+    // =====================================================================
 
-    // Conversaciones. El nombre y el proyecto van cifrados (metaIv, metaCt).
-    // Se pueden renombrar, archivar y marcar la hora del último mensaje,
-    // pero nunca borrar.
+    // Nombre, proyecto y vista previa van cifrados. Nunca se borran.
+    // Los fundadores pueden ver que existe cualquier chat (no su contenido):
+    // así encuentran las conversaciones de antes, que no tienen lista.
     match /chats/{chatId} {
-      allow read: if isMember();
+      function inChat() {
+        return (('members' in resource.data) && request.auth.uid in resource.data.members)
+          || (!('members' in resource.data) && isFounder());
+      }
+      function changed() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+
+      allow read: if isFounder() || (isMember() && request.auth.uid in resource.data.members);
+
       allow create: if isMember()
         && request.resource.data.keys().hasOnly(
-             ['metaIv', 'metaCt', 'createdBy', 'createdAt', 'lastMessageAt',
-              'lastMessageBy', 'archived'])
+             ['members', 'metaIv', 'metaCt', 'createdBy', 'createdAt', 'lastMessageAt',
+              'lastMessageBy', 'archived', 'count'])
+        && request.resource.data.members is list
+        && request.auth.uid in request.resource.data.members
+        && request.resource.data.members.size() >= 1
+        && request.resource.data.members.size() <= 8
+        && request.resource.data.members.hasOnly(allMembers())
         && request.resource.data.metaIv is string
         && request.resource.data.metaIv.size() == 16
         && request.resource.data.metaCt is string
@@ -75,35 +270,72 @@ service cloud.firestore {
         && request.resource.data.createdAt == request.time
         && request.resource.data.lastMessageAt == request.time
         && request.resource.data.lastMessageBy == request.auth.uid
-        && request.resource.data.archived == false;
-      allow update: if isMember() && (
-        (request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['lastMessageAt', 'lastMessageBy'])
+        && request.resource.data.archived == false
+        && request.resource.data.count == 0;
+
+      allow update: if isMember() && inChat() && (
+        // Mensaje nuevo: hora, autor, vista previa cifrada y contador +1.
+        (changed().hasOnly(['lastMessageAt', 'lastMessageBy', 'lastIv', 'lastCt', 'count'])
           && request.resource.data.lastMessageAt == request.time
-          && request.resource.data.lastMessageBy == request.auth.uid)
-        || (request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['metaIv', 'metaCt'])
+          && request.resource.data.lastMessageBy == request.auth.uid
+          && (!changed().hasAny(['lastIv']) || (request.resource.data.lastIv is string
+                && request.resource.data.lastIv.size() == 16))
+          && (!changed().hasAny(['lastCt']) || (request.resource.data.lastCt is string
+                && request.resource.data.lastCt.size() <= 2000))
+          && (!changed().hasAny(['count'])
+              || request.resource.data.count == resource.data.get('count', 0) + 1))
+        // Renombrar o cambiar de proyecto.
+        || (changed().hasOnly(['metaIv', 'metaCt'])
           && request.resource.data.metaIv is string
           && request.resource.data.metaIv.size() == 16
           && request.resource.data.metaCt is string
           && request.resource.data.metaCt.size() <= 2000)
-        || (request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['archived'])
-          && request.resource.data.archived is bool)
+        // Archivar o desarchivar.
+        || (changed().hasOnly(['archived']) && request.resource.data.archived is bool)
+        // Agregar o quitar miembros (solo en las conversaciones nuevas).
+        || (changed().hasOnly(['members'])
+          && ('members' in resource.data)
+          && request.resource.data.members is list
+          && request.resource.data.members.size() >= 1
+          && request.resource.data.members.size() <= 8
+          && request.resource.data.members.hasOnly(allMembers()))
       );
       allow delete: if false;
 
+      // La llave del chat, cifrada para cada miembro. La entrega otro
+      // miembro del chat (o uno mismo); el destinatario debe ser miembro.
+      match /keys/{userId} {
+        // getAfter: vale también cuando el chat se crea en la misma escritura.
+        function bothInChat(target) {
+          let m = getAfter(/databases/$(database)/documents/chats/$(chatId)).data.members;
+          return request.auth.uid in m && target in m;
+        }
+        allow read: if canUseChat(chatId);
+        allow create, update: if isMember()
+          && bothInChat(userId)
+          && request.resource.data.keys().hasOnly(['from', 'fp', 'iv', 'ct', 'at'])
+          && request.resource.data.from == request.auth.uid
+          && request.resource.data.fp is string
+          && request.resource.data.fp.size() == 64
+          && request.resource.data.iv is string
+          && request.resource.data.iv.size() == 16
+          && request.resource.data.ct is string
+          && request.resource.data.ct.size() <= 200
+          && request.resource.data.at == request.time;
+        allow delete: if false;
+      }
+
       match /messages/{messageId} {
-        allow read: if isMember();
-        allow create: if isMember() && validMessage();
+        allow read: if canUseChat(chatId);
+        allow create: if canUseChat(chatId) && validMessage();
         allow update, delete: if false;
       }
 
       // Reacciones: una por persona y mensaje ({mensaje}_{uid}). El emoji va
       // cifrado; quitarla la deja vacía. Cada quien solo toca la suya.
       match /reactions/{reactionId} {
-        allow read: if isMember();
-        allow create, update: if isMember()
+        allow read: if canUseChat(chatId);
+        allow create, update: if canUseChat(chatId)
           && request.resource.data.keys().hasOnly(['msg', 'uid', 'ct', 'iv', 'updatedAt'])
           && request.resource.data.uid == request.auth.uid
           && request.resource.data.msg is string
@@ -118,18 +350,35 @@ service cloud.firestore {
 
       // "escribiendo…": solo la hora (o null). Cada quien solo el suyo.
       match /typing/{userId} {
-        allow read: if isMember();
-        allow create, update: if isMember()
+        allow read: if canUseChat(chatId);
+        allow create, update: if canUseChat(chatId)
           && request.auth.uid == userId
           && request.resource.data.keys().hasOnly(['at'])
           && (request.resource.data.at == null || request.resource.data.at == request.time);
         allow delete: if false;
       }
+
+      // Pendientes de las conversaciones nuevas.
+      match /tasks/{taskId} {
+        allow read: if canUseChat(chatId);
+        allow create: if canUseChat(chatId) && validTask(chatId);
+        allow update: if canUseChat(chatId) && validTaskUpdate();
+        allow delete: if false;
+      }
+
+      // Archivos de las conversaciones nuevas.
+      match /files/{fileId}/chunks/{chunkId} {
+        allow read: if canUseChat(chatId);
+        allow create: if canUseChat(chatId) && validChunk();
+        allow update, delete: if false;
+      }
     }
 
-    // Biblioteca de stickers: los datos del archivo van cifrados. Se pueden
-    // ocultar, nunca borrar.
-    match /stickers/{stickerId} {
+    // =====================================================================
+    // Biblioteca de stickers (compartida por todos los miembros)
+    // =====================================================================
+
+    match /library/{stickerId} {
       allow read: if isMember();
       allow create: if isMember()
         && request.resource.data.keys().hasOnly(['ct', 'iv', 'uid', 'createdAt', 'hidden'])
@@ -146,59 +395,54 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Pendientes: el texto va cifrado. Se marcan como hechos o se reabren;
-    // nunca se borran.
-    match /tasks/{taskId} {
+    match /libfiles/{fileId}/chunks/{chunkId} {
       allow read: if isMember();
-      allow create: if isMember()
-        && request.resource.data.keys().hasOnly(
-             ['chatId', 'ct', 'iv', 'createdBy', 'createdAt', 'done', 'doneBy', 'doneAt'])
-        && request.resource.data.chatId is string
-        && request.resource.data.chatId.size() > 0
-        && request.resource.data.chatId.size() <= 64
-        && request.resource.data.ct is string
-        && request.resource.data.ct.size() <= 20000
-        && request.resource.data.iv is string
-        && request.resource.data.iv.size() == 16
-        && request.resource.data.createdBy == request.auth.uid
-        && request.resource.data.createdAt == request.time
-        && request.resource.data.done == false
-        && request.resource.data.doneBy == null
-        && request.resource.data.doneAt == null;
-      allow update: if isMember()
-        && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['done', 'doneBy', 'doneAt'])
-        && ((request.resource.data.done == true
-              && request.resource.data.doneBy == request.auth.uid
-              && request.resource.data.doneAt == request.time)
-            || (request.resource.data.done == false
-              && request.resource.data.doneBy == null
-              && request.resource.data.doneAt == null));
-      allow delete: if false;
-    }
-
-    // Archivos: trozos cifrados de hasta ~900 KB. No se editan ni se borran.
-    match /files/{fileId}/chunks/{chunkId} {
-      allow read: if isMember();
-      allow create: if isMember()
-        && request.resource.data.keys().hasOnly(['data', 'iv', 'uid', 'createdAt'])
-        && request.resource.data.data is bytes
-        && request.resource.data.data.size() <= 1000000
-        && request.resource.data.iv is string
-        && request.resource.data.iv.size() == 16
-        && request.resource.data.uid == request.auth.uid
-        && request.resource.data.createdAt == request.time;
+      allow create: if isMember() && validChunk();
       allow update, delete: if false;
     }
 
-    // Hasta dónde leyó cada uno cada conversación (no leídos y "visto").
-    // Cada quien solo escribe el suyo.
-    match /users/{userId} {
-      allow read: if isMember();
-      allow create, update: if isMember()
-        && request.auth.uid == userId
-        && request.resource.data.keys().hasOnly(['lastRead'])
-        && request.resource.data.lastRead is map;
+    // =====================================================================
+    // Versión anterior: solo los dos fundadores
+    // =====================================================================
+
+    // Conversación "General" original.
+    match /messages/{messageId} {
+      allow read: if isFounder();
+      allow create: if isFounder() && validMessage();
+      allow update, delete: if false;
+    }
+
+    match /files/{fileId}/chunks/{chunkId} {
+      allow read: if isFounder();
+      allow create: if isFounder() && validChunk();
+      allow update, delete: if false;
+    }
+
+    match /stickers/{stickerId} {
+      allow read: if isFounder();
+      allow create: if isFounder()
+        && request.resource.data.keys().hasOnly(['ct', 'iv', 'uid', 'createdAt', 'hidden'])
+        && request.resource.data.ct is string
+        && request.resource.data.ct.size() <= 2000
+        && request.resource.data.iv is string
+        && request.resource.data.iv.size() == 16
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.hidden == false;
+      allow update: if isFounder()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hidden'])
+        && request.resource.data.hidden is bool;
+      allow delete: if false;
+    }
+
+    match /tasks/{taskId} {
+      allow read: if isFounder();
+      allow create: if isFounder()
+        && request.resource.data.chatId is string
+        && request.resource.data.chatId.size() > 0
+        && request.resource.data.chatId.size() <= 64
+        && validTask(request.resource.data.chatId);
+      allow update: if isFounder() && validTaskUpdate();
       allow delete: if false;
     }
 

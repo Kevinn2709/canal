@@ -3,8 +3,11 @@
  *
  * El plan gratis de Firebase no incluye Cloud Storage, así que los archivos
  * se guardan en Firestore, cifrados y partidos en trozos de 900 KB:
- *   files/{fileId}/chunks/0000, 0001, …
- * Cada trozo se cifra con la llave de la conversación, y sus datos
+ *   chats/{chatId}/files/{fileId}/chunks/0000, 0001, …  (conversaciones nuevas)
+ *   files/{fileId}/chunks/…                              (conversaciones de antes)
+ *   libfiles/{fileId}/chunks/…                           (biblioteca de stickers)
+ * Cada trozo se cifra con la llave de su conversación (o la del espacio, para
+ * los stickers), y sus datos
  * autenticados incluyen el id del archivo, su número y el total: si alguien
  * cambia, reordena o quita un trozo, el archivo no se descifra.
  *
@@ -23,6 +26,24 @@ import {
 } from "firebase/firestore";
 import { decryptBytes, encryptBytes } from "./crypto";
 import type { FileInfo } from "./chats";
+
+/** Dónde se guardan los archivos y con qué llave se cifran. */
+export interface FileStore {
+  key: CryptoKey;
+  base: string[]; // colección de los archivos, p. ej. ["chats", id, "files"]
+}
+
+export function chatFileStore(chat: { id: string; legacy: boolean }, key: CryptoKey): FileStore {
+  return { key, base: chat.legacy ? ["files"] : ["chats", chat.id, "files"] };
+}
+
+export function libraryFileStore(key: CryptoKey): FileStore {
+  return { key, base: ["libfiles"] };
+}
+
+function cacheKey(store: FileStore, id: string): string {
+  return `${store.base.join("/")}/${id}`;
+}
 
 export const CHUNK_SIZE = 900 * 1024;
 export const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -134,20 +155,21 @@ export async function prepareFile(file: File): Promise<PreparedFile> {
 /** Cifra y sube el archivo en trozos. `onProgress` recibe de 0 a 1. */
 export async function uploadFile(
   db: Firestore,
-  key: CryptoKey,
+  store: FileStore,
   uid: string,
   prepared: PreparedFile,
   onProgress: (fraction: number) => void
 ): Promise<FileInfo> {
   const bytes = new Uint8Array(await prepared.blob.arrayBuffer());
   const total = Math.max(1, Math.ceil(bytes.length / CHUNK_SIZE));
-  const fileId = doc(collection(db, "files")).id;
+  const [root, ...rest] = store.base;
+  const fileId = doc(collection(db, root, ...rest)).id;
 
   onProgress(0);
   for (let i = 0; i < total; i++) {
     const part = bytes.subarray(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-    const sealed = await encryptBytes(key, part, fileAad(fileId, i, total));
-    await setDoc(doc(db, "files", fileId, "chunks", chunkId(i)), {
+    const sealed = await encryptBytes(store.key, part, fileAad(fileId, i, total));
+    await setDoc(doc(db, root, ...rest, fileId, "chunks", chunkId(i)), {
       data: Bytes.fromUint8Array(sealed.data),
       iv: sealed.iv,
       uid,
@@ -160,7 +182,7 @@ export async function uploadFile(
   const typed = prepared.blob.type === prepared.mime
     ? prepared.blob
     : new Blob([bytes], { type: prepared.mime });
-  blobCache.set(fileId, Promise.resolve(typed));
+  blobCache.set(cacheKey(store, fileId), Promise.resolve(typed));
 
   const info: FileInfo = {
     id: fileId,
@@ -181,42 +203,45 @@ const blobCache = new Map<string, Promise<Blob>>();
 const urlCache = new Map<string, Promise<string>>();
 
 /** Descarga, verifica y descifra un archivo (con caché). */
-export function getFileBlob(db: Firestore, key: CryptoKey, info: FileInfo): Promise<Blob> {
-  let pending = blobCache.get(info.id);
+export function getFileBlob(db: Firestore, store: FileStore, info: FileInfo): Promise<Blob> {
+  const ck = cacheKey(store, info.id);
+  let pending = blobCache.get(ck);
   if (!pending) {
+    const [root, ...rest] = store.base;
     pending = (async () => {
       const parts = await Promise.all(
         Array.from({ length: info.chunks }, async (_, i) => {
-          const snap = await getDoc(doc(db, "files", info.id, "chunks", chunkId(i)));
+          const snap = await getDoc(doc(db, root, ...rest, info.id, "chunks", chunkId(i)));
           const d = snap.data();
           if (!d || !(d.data instanceof Bytes) || typeof d.iv !== "string") {
             throw new Error("Falta una parte del archivo.");
           }
-          return decryptBytes(key, d.iv, d.data.toUint8Array(), fileAad(info.id, i, info.chunks));
+          return decryptBytes(store.key, d.iv, d.data.toUint8Array(), fileAad(info.id, i, info.chunks));
         })
       );
       return new Blob(parts, { type: info.mime });
     })();
-    blobCache.set(info.id, pending);
-    pending.catch(() => blobCache.delete(info.id));
+    blobCache.set(ck, pending);
+    pending.catch(() => blobCache.delete(ck));
   }
   return pending;
 }
 
 /** URL local (blob:) para mostrar una foto, un video o un audio. */
-export function getFileUrl(db: Firestore, key: CryptoKey, info: FileInfo): Promise<string> {
-  let pending = urlCache.get(info.id);
+export function getFileUrl(db: Firestore, store: FileStore, info: FileInfo): Promise<string> {
+  const ck = cacheKey(store, info.id);
+  let pending = urlCache.get(ck);
   if (!pending) {
-    pending = getFileBlob(db, key, info).then((blob) => URL.createObjectURL(blob));
-    urlCache.set(info.id, pending);
-    pending.catch(() => urlCache.delete(info.id));
+    pending = getFileBlob(db, store, info).then((blob) => URL.createObjectURL(blob));
+    urlCache.set(ck, pending);
+    pending.catch(() => urlCache.delete(ck));
   }
   return pending;
 }
 
 /** Descarga el archivo al dispositivo con su nombre original. */
-export async function downloadFile(db: Firestore, key: CryptoKey, info: FileInfo): Promise<void> {
-  const url = await getFileUrl(db, key, info);
+export async function downloadFile(db: Firestore, store: FileStore, info: FileInfo): Promise<void> {
+  const url = await getFileUrl(db, store, info);
   const a = document.createElement("a");
   a.href = url;
   a.download = info.name;

@@ -1,192 +1,208 @@
-# Chat privado cifrado para dos personas
+# Chat privado cifrado para varios miembros
 
-Chat en tiempo real con historial guardado y cifrado de extremo a extremo,
-para dos cuentas. Usa:
+Chat en tiempo real con historial guardado y cifrado de extremo a extremo.
+Hay chats privados entre dos personas y grupos, ordenados por proyecto.
+Usa:
 
-- **Vercel** (plan Hobby, gratis) para la web.
+- **Vercel** (plan Hobby, gratis) para la web y para la pequeña función que
+  envía las notificaciones push.
 - **Firebase** (plan Spark, gratis, sin tarjeta) para el inicio de sesión y
-  para guardar los mensajes cifrados en Firestore.
-
-No hace falta ningún servidor propio (ni Render).
+  para guardar todo cifrado en Firestore.
 
 ## Cómo funciona
 
-1. **Inicio de sesión:** cada uno entra con su correo y contraseña. Las dos
-   cuentas se crean a mano en Firebase; nadie más puede registrarse desde la web.
-2. **Frase de cifrado:** el primero que entra crea una frase. De ella sale la
-   llave que cifra los mensajes. En Firebase solo se guarda una sal aleatoria y
-   una prueba de verificación, nunca la frase ni la llave.
-3. **Verificación:** el segundo escribe la frase y la web la comprueba contra
-   esa prueba. Si no coincide, lo dice en vez de abrir una conversación vacía.
-   No importan mayúsculas, acentos, signos ni espacios de más.
-4. **Mensajes:** se cifran en el teléfono antes de enviarse (AES-GCM de 256
-   bits, llave derivada con PBKDF2-SHA256 de 600 000 iteraciones). En Firestore
-   solo hay texto cifrado. Aparecen al instante en el otro dispositivo, y quien
-   no estaba conectado los ve al entrar.
-5. **Historial:** las reglas de Firestore (`firestore.rules`) solo dejan leer y
-   escribir a esas dos cuentas, y prohíben editar o borrar mensajes.
-6. **Recordar en este dispositivo** (opcional): guarda la llave (no la frase)
-   en el navegador para no escribir la frase cada vez. "Cerrar sesión" la borra.
-7. **Conversaciones por proyecto:** se pueden crear varias conversaciones y
-   agruparlas por proyecto (Trabajo, Personal o el nombre que quieran). Se
-   pueden renombrar, mover de proyecto y archivar; nunca borrar. El nombre y el
-   proyecto también van cifrados. El historial anterior está en "General".
-8. **Fotos y archivos:** con el clip, pegando (Ctrl+V) o arrastrando al chat.
-   Las fotos se comprimen a 1920 px antes de enviarse. Todo se cifra en el
-   dispositivo y se guarda en Firestore en trozos de 900 KB (el plan gratis de
-   Firebase no incluye Cloud Storage). Las fotos se descargan solo cuando
-   aparecen en pantalla; los videos y audios, al pulsar reproducir.
-9. **No leídos y "visto":** un punto azul marca las conversaciones con
-   mensajes nuevos, y el título de la pestaña dice cuántas son. Tu último
-   mensaje dice "visto" cuando el otro ya lo leyó.
-10. **Menú de cada mensaje:** pulsación larga en el teléfono, clic derecho o el
-    botón "…" al pasar el ratón. Desde ahí: reaccionar, responder, copiar y
-    marcar como pendiente.
-11. **Responder citando y reacciones:** la respuesta muestra el mensaje
-    original (tocarlo lleva a él). Una reacción por persona y mensaje; tocar
-    una reacción pone o quita la tuya. Ambas van cifradas.
-12. **Notas de voz:** el micrófono aparece cuando la caja de texto está vacía.
-    Toca para grabar (hasta 5 minutos) y luego enviar o descartar. El navegador
-    pedirá permiso para el micrófono la primera vez. Si el otro navegador no
-    reproduce el formato, se ofrece descargarla.
-13. **Stickers propios:** la carita abre la biblioteca, que comparten los
-    dos. "Agregar" convierte cualquier imagen en sticker de 512 px (los PNG con
-    fondo transparente quedan mejor; los GIF conservan la animación). "Editar"
-    permite quitarlos de la biblioteca.
-14. **"escribiendo…":** se ve en vivo cuando el otro escribe. Solo se guarda la
-    hora, nunca el texto.
-15. **Pendientes:** cada conversación tiene su lista (botón de la lista en la
-    cabecera), y "Pendientes" en la barra lateral muestra todos, agrupados por
-    proyecto. Se marcan como hechos o se reabren; nunca se borran.
+1. **Inicio de sesión:** cada uno entra con su correo y contraseña. Las
+   cuentas se crean a mano en Firebase y su UID se agrega a las reglas; nadie
+   más puede entrar.
+2. **Frase personal:** cada persona crea su propia frase, que solo ella sabe.
+   Con ella se cifra su "paquete" de llaves (en `keys/{uid}`). Nadie necesita
+   la frase de nadie más.
+3. **Aprobación:** una cuenta nueva muestra un código de seguridad de 20
+   cifras. Otro miembro lo compara con ella (en persona o por llamada) y la
+   aprueba en Configuración → Miembros. Desde ese momento puede ver los
+   perfiles y ser agregada a chats.
+4. **Una llave por chat:** cada chat nuevo tiene su propia llave AES-256,
+   entregada cifrada solo a sus miembros (ECDH P-256 + HKDF entre quien la
+   entrega y quien la recibe). Quien no es miembro no tiene la llave, y las
+   reglas de Firestore tampoco le dejan leer nada de ese chat.
+5. **Mensajes:** se cifran en el teléfono antes de enviarse (AES-GCM, IV
+   aleatorio; el chat y el remitente van autenticados). En Firestore solo hay
+   texto cifrado. Nada se edita ni se borra.
+6. **Conversaciones de antes:** las que existían antes de los perfiles son
+   solo de los dos fundadores y siguen con la llave de la frase compartida.
+   Cada fundador la escribe una única vez al actualizar.
+7. **Lista de chats:** foto, nombre, vista previa cifrada del último mensaje,
+   número de mensajes sin leer y "@" si te mencionaron. Fijar arriba,
+   silenciar y archivar (pulsación larga, clic derecho o "⌄"). Filtros: Todos,
+   No leídos, cada proyecto y Archivados.
+8. **Perfiles:** nombre y foto, cifrados con la llave del espacio (la tienen
+   todos los miembros aprobados).
+9. **Grupos:** nombre y foto de quien escribe, menciones con "@" (con lista
+   para elegir), "Ana está escribiendo…", "visto por todos" / "visto por Ana".
+   Desde "Información del chat" se agregan miembros (ven todo el historial),
+   se quitan o se sale del grupo.
+10. **Fotos, archivos, notas de voz, stickers, reacciones, responder citando
+    y pendientes:** igual que antes. Los stickers son una biblioteca compartida
+    por todos los miembros.
+11. **Avisos con la web abierta** (Configuración, por dispositivo): aviso
+    dentro de la web con sonido cuando llega un mensaje de otro chat, y aviso
+    del sistema cuando la web está en segundo plano.
+12. **Notificaciones con la web cerrada (push):** en Android y computadora
+    desde el navegador; en iPhone, con la web agregada a la pantalla de inicio
+    (iOS 16.4 o posterior). El aviso nunca lleva el texto del mensaje: dice
+    "Nuevo mensaje" o, si lo activas en ese dispositivo, de qué chat y de quién.
+    Los chats silenciados no avisan, salvo que te mencionen.
+13. **Recordar en este dispositivo** (opcional): guarda la llave personal (no
+    la frase) en el navegador. "Cerrar sesión" la borra.
 
 ## Qué protege y qué no
 
 Protege contra:
 
-- Google y cualquiera con acceso a la consola de Firebase: solo ven texto
-  cifrado.
-- Quien entre a la cuenta de Google del administrador: tampoco puede leer los
-  mensajes sin la frase.
-- Cambios en la base de datos: un mensaje alterado, o con el remitente
-  cambiado, deja de descifrarse en lugar de mostrarse falsificado.
+- Google, cualquiera con acceso a la consola de Firebase o a la cuenta de
+  Google del administrador: solo ven texto cifrado (mensajes, archivos,
+  nombres de chats y proyectos, perfiles, fotos, stickers, pendientes,
+  reacciones, vista previa).
+- Un miembro que no está en un chat: no tiene su llave ni permiso de lectura.
+- Cambios en la base de datos: un mensaje alterado deja de descifrarse; una
+  llave pública cambiada a escondidas no valida su perfil y la app no le
+  entrega llaves.
 
 No protege contra:
 
 - **Un teléfono desbloqueado** con la sesión iniciada y la llave recordada, o
-  alguien que conozca la frase.
-- **Metadatos:** en la consola se ve quién escribió, cuándo, cuántas
-  conversaciones hay, cuándo se leyó cada una, cuándo alguien estaba
-  escribiendo, qué mensajes tienen reacción, cuántos pendientes tiene cada
-  conversación y más o menos qué tan largo es cada mensaje o archivo (no su
-  contenido, su nombre ni el emoji).
+  alguien que conozca tu frase personal.
+- **Metadatos:** en la consola se ve quién escribió y cuándo, quién está en
+  cada chat, cuántos mensajes tiene cada chat, cuándo leyó cada quien, quién
+  silenció qué chat, y más o menos qué tan largo es cada mensaje o archivo.
+  Los dos fundadores pueden ver que existe cualquier chat (no su nombre ni su
+  contenido).
+- **Quitar a alguien de un chat** le cierra el acceso por las reglas, pero la
+  llave de ese chat no cambia: lo que ya pudo leer, ya lo leyó.
+- **Notificaciones:** la función de Vercel ve el id del chat y quién lo
+  envió (nunca el texto). Apple o Google ven cuándo llega un aviso.
 - **Cambios al código de la web:** quien controle tu cuenta de GitHub o de
-  Vercel podría modificar la página para capturar la frase. Activa la
-  verificación en dos pasos en GitHub, Vercel y Google.
-- **Filtración de la frase:** la llave es la misma para todo el historial. Si
-  la frase se filtra, se puede descifrar todo lo guardado.
+  Vercel podría modificar la página. Activa la verificación en dos pasos en
+  GitHub, Vercel y Google.
 
-## La frase de cifrado
+## Si alguien olvida su frase
 
-- Usa 4 o 5 palabras sin relación entre sí. Mínimo 16 letras y 3 palabras.
-- Compártela en persona o por llamada, nunca por escrito ni por este chat.
-- **Si los dos la olvidan, nadie puede recuperar los mensajes.** Para empezar
-  de cero: en Firebase → Firestore Database, borra el documento `meta/crypto`
-  y la colección `messages`. El siguiente que entre creará una frase nueva.
+En la pantalla de la frase: "¿Olvidaste tu frase?" → crea una nueva. Otro
+miembro la vuelve a aprobar (con el nuevo código) y, en cuanto alguien de cada
+chat abre la web, recupera esos chats con todo su historial. Un fundador
+recupera además las conversaciones de antes escribiendo la frase compartida.
+
+Si todos los miembros de un chat olvidan su frase a la vez, ese chat no se
+puede recuperar (nadie, ni Firebase, tiene la llave).
 
 ## Límites del plan gratis
 
 Firestore en el plan Spark incluye 1 GiB guardado, 10 GiB de descarga al mes,
 50 000 lecturas y 20 000 escrituras al día. Si se supera un límite, Firebase
-deja de responder hasta el día (o mes) siguiente; no cobra nada.
+deja de responder hasta el día (o mes) siguiente; no cobra nada. Para 3 o 4
+personas sobra; lo que más gasta son los archivos grandes y los videos
+(máximo 10 MB cada uno).
 
-- **Mensajes:** para dos personas sobra. Abrir una conversación lee hasta 200
-  mensajes.
-- **Archivos:** máximo 10 MB cada uno. Una foto comprimida ocupa unos cientos
-  de KB, así que en 1 GiB caben miles; los archivos grandes y los videos gastan
-  el espacio mucho más rápido.
-- Si algún día necesitan más espacio, Firebase Cloud Storage da 5 GB sin costo,
-  pero exige el plan Blaze (con tarjeta).
+Vercel Hobby incluye de sobra las llamadas de la función de notificaciones.
+Ojo: el plan Hobby es para uso personal no comercial.
 
-## Actualizar desde una versión anterior
+## Actualizar desde la versión anterior (de dos personas)
 
 Nada del historial se pierde.
 
-1. **Primero las reglas:** en Firebase → Firestore Database → Reglas, pega el
-   nuevo `firestore.rules`, pon sus dos UID y publica. Las reglas nuevas
-   siguen aceptando la versión anterior de la web, así que no se rompe nada
-   mientras actualizas.
-2. **Luego el código:** sube el contenido de esta carpeta a GitHub (si vienes
-   de la versión de un solo chat, borra antes `src/components/Chat.tsx`). Este
-   paquete no trae `firebase-config.ts`, así que tu configuración se conserva.
-3. Vercel redespliega solo. Recarguen la web en ambos dispositivos.
+1. **Reglas:** Firebase → Firestore Database → Reglas. Pega el nuevo
+   `firestore.rules`. En `founders()` pon los mismos dos UID de antes (tú y tu
+   socio). En `others()` deja los textos de ejemplo por ahora. **Publicar.**
+2. **Código:** sube el contenido de esta carpeta a GitHub (Add file → Upload
+   files, el contenido, no la carpeta). Incluye las carpetas nuevas `public`
+   y `src/app/api`. No hay que borrar nada. Este paquete no trae
+   `firebase-config.ts`, así que tu configuración se conserva.
+3. Espera a que Vercel diga **Ready** y recarga la web.
+4. **Cada fundador**, al entrar: escribe una última vez la frase compartida de
+   antes, crea su frase personal (distinta) y su perfil. No hace falta
+   aprobarse entre ustedes.
 
-## Instalación
+Mientras uno ya actualizó y el otro no, el que sigue en la versión vieja no
+puede crear chats nuevos; con recargar la página se arregla.
 
-### Parte A: Firebase
+## Activar las notificaciones push (una sola vez)
 
-1. Entra a <https://console.firebase.google.com> y crea un proyecto (por
-   ejemplo `canal`). Google Analytics no hace falta.
-2. **Authentication** → **Comenzar** → pestaña **Sign-in method** →
-   **Correo electrónico/contraseña** → activa el primer interruptor → **Guardar**.
-3. **Authentication** → pestaña **Users** → **Agregar usuario**: crea tu cuenta
-   y la de tu socio. Copia el **UID de usuario** de cada uno.
-   - Para que tu socio elija su propia contraseña: en su fila, menú ⋮ →
-     **Restablecer contraseña** (le llega un correo).
-   - Si en **Authentication → Settings → User actions** aparece la opción
-     **Enable create (sign-up)**, desactívala para que nadie más pueda crear
-     cuentas.
-4. **Firestore Database** → **Crear base de datos** → edición **Standard** (si
-   pregunta) → elige una ubicación (no se puede cambiar después) → **modo de
-   producción** → **Crear**.
-5. Pestaña **Reglas**: borra todo y pega el contenido de `firestore.rules`.
-   Reemplaza `UID_TUYO` y `UID_DE_TU_SOCIO` por los UID del paso 3 →
-   **Publicar**.
-6. Engrane → **Configuración del proyecto** → **General** → **Tus apps** →
-   ícono web `</>` → ponle un nombre → **Registrar app** (sin Firebase Hosting).
-   Copia solo el bloque `const firebaseConfig = { ... };`.
+1. En la web: Configuración → Notificaciones → **Generar llaves**. Se crean
+   en tu dispositivo.
+2. Vercel → tu proyecto → Settings → Environment Variables. Agrega:
+   - `VAPID_PUBLIC_KEY` = la pública
+   - `VAPID_PRIVATE_KEY` = la privada (es secreta: solo aquí)
+   - (opcional) `VAPID_SUBJECT` = `mailto:tu-correo` (si no, se usa la URL del sitio)
+3. Deployments → los tres puntos del último → **Redeploy**.
+4. En cada dispositivo: Configuración → **Activar en este dispositivo** →
+   **Enviar prueba**.
 
-### Parte B: el código
+**En iPhone:** borra el ícono viejo de la pantalla de inicio. Abre la web en
+Safari → Compartir → **Agregar a pantalla de inicio**. Ábrela desde ese ícono
+(tendrás que iniciar sesión y escribir tu frase ahí una vez: el ícono tiene su
+propio almacenamiento) y activa las notificaciones desde Configuración.
 
-7. Abre `src/lib/firebase-config.ts`, borra el bloque de ejemplo y pega el que
-   copiaste. Guarda. Estos valores no son secretos y pueden ir en un repo
-   público.
+## Sumar a un miembro
 
-### Parte C: GitHub
+1. Firebase → Authentication → Users → **Agregar usuario** con su correo.
+   Copia su **UID**. (Si entra antes de este paso, la web le muestra su UID.)
+2. En `firestore.rules`, agrega su UID en `others()` (reemplazando un texto de
+   ejemplo) → **Publicar**.
+3. Esa persona entra a la web, crea su frase personal y ve su código.
+4. Tú: Configuración → Miembros → **Aprobar**. Comparen el código; si
+   coincide, apruébala. Ella crea su perfil.
+5. Agrégala a los chats que quieras (Información del chat → Agregar miembros)
+   o crea un chat o grupo nuevo con ella. No verá los chats donde no esté ni
+   las conversaciones de antes.
 
-8. Borra lo de versiones anteriores: las carpetas `src` y `server` y el archivo
-   `.env.example`, si existen (en cada uno: menú ⋯ → **Delete directory** o
-   **Delete file** → **Commit changes**).
-9. **Add file → Upload files**, arrastra el contenido de esta carpeta (no la
-   carpeta en sí) → **Commit changes**.
+## Instalación desde cero
 
-### Parte D: Vercel
+### Firebase
 
-10. Vercel redespliega solo. En **Settings → Environment Variables** puedes
-    borrar `NEXT_PUBLIC_RELAY_URL`, que ya no se usa.
-11. Si usabas Render para el relay, ya puedes borrar ese servicio.
+1. <https://console.firebase.google.com> → crea un proyecto (Analytics no
+   hace falta).
+2. **Authentication** → Comenzar → Sign-in method → **Correo
+   electrónico/contraseña** → activar → Guardar.
+3. **Authentication → Users → Agregar usuario** para cada persona. Copia los
+   UID. Si en Settings → User actions aparece **Enable create (sign-up)**,
+   desactívalo.
+4. **Firestore Database → Crear base de datos** → Standard → ubicación →
+   modo de producción.
+5. Pestaña **Reglas**: pega `firestore.rules` con los UID (dos en
+   `founders()`, los demás en `others()`) → **Publicar**.
+6. Engrane → Configuración del proyecto → Tus apps → ícono web `</>` →
+   registra la app (sin Firebase Hosting) y copia el bloque
+   `const firebaseConfig = { ... };`.
 
-### Parte E: primera vez
+### Código, GitHub y Vercel
 
-12. Uno de los dos entra con su correo y contraseña y **crea la frase**.
-13. Le dice la frase al otro en persona o por llamada.
-14. El otro entra con su cuenta y **escribe la frase**. Si coincide, entra a la
-    misma conversación.
+7. Pega ese bloque en `src/lib/firebase-config.ts`. Estos valores no son
+   secretos.
+8. Sube el contenido de la carpeta a un repositorio de GitHub.
+9. En Vercel, importa el repositorio y despliega.
+10. Configura las notificaciones push (sección de arriba).
+
+### Primera vez
+
+11. El primer fundador entra, crea su frase personal y su perfil.
+12. Los demás entran y crean su frase; el primero los aprueba comparando el
+    código.
 
 ## Si algo falla
 
 - **"Falta la configuración de Firebase"**: no se guardó el paso 7.
 - **"Correo o contraseña incorrectos"**: revisa la cuenta en Authentication →
   Users.
-- **"Tu cuenta no tiene acceso a la conversación"**: el UID de esa cuenta no
-  está bien escrito en las reglas (paso 5), o las reglas no se publicaron.
-- **"Sin permiso para leer las conversaciones"**: faltan las reglas nuevas.
-  Publica el `firestore.rules` de esta versión con sus UID.
-- **Una foto del iPhone llega como archivo y no como foto**: el navegador no
-  pudo leer el formato (HEIC). Al elegirla desde la fototeca, el iPhone
-  normalmente la convierte a JPG; si no, se envía como archivo descargable.
-- **"La frase no coincide"**: es otra frase, no un problema de mayúsculas o
-  acentos. Confírmenla palabra por palabra.
-- **Mensajes marcados "sin cifrar"**: se escribieron con una versión anterior.
-  Puedes borrarlos desde la consola de Firestore.
-- **El build de Vercel falla por la versión de Node**: en Vercel → Settings →
-  Build and Deployment → Node.js Version, elige 22.x.
+- **"Tu cuenta aún no tiene acceso"**: ese UID no está en las reglas o no se
+  publicaron.
+- **"Sin permiso para leer…"**: faltan las reglas de esta versión.
+- **"La frase no coincide"**: es tu frase personal (la tuya), no la de otro.
+- **"Esperando la llave de este chat"**: otro miembro del chat debe abrir la
+  web una vez (pasa tras agregarte o tras cambiar tu frase).
+- **No llegan las notificaciones**: revisa que las variables estén en Vercel
+  y que hiciste Redeploy; en iPhone, que abriste la web desde el ícono de la
+  pantalla de inicio; usa "Enviar prueba".
+- **Una foto del iPhone llega como archivo**: el navegador no pudo leer el
+  formato (HEIC); se envía como archivo descargable.
+- **El build de Vercel falla por la versión de Node**: Settings → Build and
+  Deployment → Node.js Version → 22.x.

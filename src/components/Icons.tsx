@@ -167,3 +167,70 @@ export function LockIcon(p: IconProps) {
     </Svg>
   );
 }
+
+export function GearIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z" />
+    </Svg>
+  );
+}
+
+export function PinIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6zM12 15v6" />
+    </Svg>
+  );
+}
+
+export function BellOffIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M13.7 21a2 2 0 01-3.4 0M18.6 13A17.9 17.9 0 0118 8M6.3 6.3A6 6 0 006 8c0 7-3 9-3 9h14M18 8a6 6 0 00-9.3-5M3 3l18 18" />
+    </Svg>
+  );
+}
+
+export function BellIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0" />
+    </Svg>
+  );
+}
+
+export function UsersIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M2.5 20a6.5 6.5 0 0113 0M16 4.5a3.5 3.5 0 010 7M18 14a6.5 6.5 0 013.5 6" />
+    </Svg>
+  );
+}
+
+export function CheckIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M5 12l5 5 9-10" />
+    </Svg>
+  );
+}
+
+export function ShieldIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" />
+      <path d="M9 12l2 2 4-4" />
+    </Svg>
+  );
+}
+
+export function EditIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4" />
+    </Svg>
+  );
+}

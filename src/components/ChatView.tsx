@@ -3,11 +3,13 @@
 /**
  * ChatView.tsx — Una conversación.
  *
- * - Mensajes en vivo, descifrados en el dispositivo.
- * - Texto, fotos, archivos, notas de voz y stickers; responder citando y
- *   reaccionar; "escribiendo…"; "visto".
- * - Pendientes de la conversación en un panel lateral.
- * - Arrastrar archivos sobre la conversación los adjunta.
+ * - Mensajes en vivo, descifrados en el dispositivo con la llave del chat.
+ * - Texto, fotos, archivos, notas de voz y stickers; responder citando,
+ *   reaccionar y mencionar (@nombre); "escribiendo…" con quién; "visto" (en
+ *   grupos, "visto por…").
+ * - Al enviar: se actualiza la vista previa cifrada de la lista, el contador
+ *   de no leídos y se avisa (push) a los demás miembros.
+ * - Pendientes e información del chat en paneles laterales.
  * - Nada se borra: las reglas de Firestore prohíben editar o eliminar mensajes.
  */
 
@@ -15,6 +17,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEve
 import type { User } from "firebase/auth";
 import {
   doc,
+  increment,
   limitToLast,
   onSnapshot,
   orderBy,
@@ -27,6 +30,9 @@ import {
 import { getFirebase } from "@/lib/firebase";
 import { decryptText, encryptText } from "@/lib/crypto";
 import {
+  encryptLast,
+  setChatArchived,
+  mentionsOf,
   messageAadFor,
   messagesCollection,
   parsePayload,
@@ -36,19 +42,32 @@ import {
   type Payload,
   type ReplyRef,
 } from "@/lib/chats";
-import { MAX_FILE_SIZE, prepareFile, uploadFile, type PreparedFile } from "@/lib/files";
+import {
+  MAX_FILE_SIZE,
+  chatFileStore,
+  libraryFileStore,
+  prepareFile,
+  uploadFile,
+  type FileStore,
+  type PreparedFile,
+} from "@/lib/files";
 import { setReaction } from "@/lib/reactions";
 import { createTask, MAX_TASK_LENGTH, type Task } from "@/lib/tasks";
+import { notifyChat } from "@/lib/push";
 import { dayKey, dayLabel, formatTime } from "@/lib/format";
+import type { Session } from "@/lib/session";
 import { useReactions } from "@/hooks/useReactions";
 import { useTyping } from "@/hooks/useTyping";
+import type { Workspace } from "@/hooks/useWorkspace";
 import { extensionFor, type Recording } from "@/hooks/useVoiceRecorder";
 import { Lightbox } from "./Attachments";
+import { ChatAvatar } from "./Avatar";
+import { ChatInfoPanel } from "./ChatInfoPanel";
 import { Composer, MAX_LENGTH, type PendingAttachment } from "./Composer";
 import { MessageActions } from "./MessageActions";
 import { MessageItem, type ChatMessage } from "./MessageItem";
 import { TasksPanel } from "./Tasks";
-import { BackIcon, FileIcon, MicIcon, MoreIcon, TasksIcon } from "./Icons";
+import { BackIcon, BellOffIcon, FileIcon, MicIcon, MoreIcon, TasksIcon } from "./Icons";
 
 interface Decrypted {
   payload: Payload | null;
@@ -73,27 +92,60 @@ function errorMessage(err: unknown): string {
     : "No se pudo enviar. Revisa tu conexión.";
 }
 
-export function ChatView({
-  chat,
-  user,
-  cryptoKey,
-  otherRead,
-  openTasks,
-  onMarkRead,
-  onBack,
-  onEdit,
-  onToggleArchive,
-}: {
+interface ViewProps {
   chat: ChatInfo;
   user: User;
-  cryptoKey: CryptoKey;
-  otherRead: Date | null;
+  session: Session;
+  ws: Workspace;
   openTasks: Task[];
-  onMarkRead: (chatId: string) => void;
   onBack: () => void;
   onEdit: () => void;
-  onToggleArchive: () => void;
-}) {
+  onLeft: () => void;
+}
+
+/** "@Nombre" que aparecen en el texto -> uids mencionados. */
+function findMentions(text: string, members: string[], myUid: string, nameOf: (uid: string) => string): string[] {
+  const lower = text.toLowerCase();
+  return members.filter((m) => {
+    if (m === myUid) return false;
+    const name = nameOf(m);
+    return name !== "Miembro" && lower.includes(`@${name.toLowerCase()}`);
+  });
+}
+
+export function ChatView(props: ViewProps) {
+  const { chat } = props;
+  if (!chat.key) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <header className="flex shrink-0 items-center gap-2 border-b border-neutral-900 px-2 pb-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] md:px-4">
+          <button onClick={props.onBack} className="rounded-full p-2 text-neutral-300 hover:bg-neutral-900 md:hidden" aria-label="Volver a la lista">
+            <BackIcon />
+          </button>
+          <p className="truncate text-[15px] font-medium">{chat.name}</p>
+        </header>
+        <div className="flex flex-1 items-center justify-center px-8 text-center text-sm text-neutral-500">
+          {chat.legacy
+            ? "Esta conversación es de antes. Para leerla, escribe la frase compartida de antes en Configuración → Seguridad."
+            : "Esperando la llave de este chat. Otro miembro te la entregará en cuanto abra la web."}
+        </div>
+      </div>
+    );
+  }
+  return <ChatRoom {...props} cryptoKey={chat.key} />;
+}
+
+function ChatRoom({
+  chat,
+  user,
+  session,
+  ws,
+  cryptoKey,
+  openTasks,
+  onBack,
+  onEdit,
+  onLeft,
+}: ViewProps & { cryptoKey: CryptoKey }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [limit, setLimit] = useState(PAGE_SIZE);
@@ -110,10 +162,15 @@ export function ChatView({
   const [focusSignal, setFocusSignal] = useState(0);
   const [actionFor, setActionFor] = useState<ChatMessage | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
-  const [tasksOpen, setTasksOpen] = useState(false);
+  const [panel, setPanel] = useState<"tasks" | "info" | null>(null);
 
   const reactions = useReactions(chat.id, cryptoKey);
-  const { otherTyping, setTyping } = useTyping(chat.id, user.uid);
+  const { typing, setTyping } = useTyping(chat.id, user.uid);
+  const otherTyping = typing.length > 0;
+  const fileStore: FileStore = chatFileStore(chat, cryptoKey);
+  const libStore: FileStore | null = session.ws ? libraryFileStore(session.ws) : null;
+  const group = chat.members.length > 2;
+  const muted = ws.muted.has(chat.id);
 
   const listRef = useRef<HTMLDivElement>(null);
   const nearBottom = useRef(true);
@@ -121,7 +178,6 @@ export function ChatView({
   const prevCount = useRef(0);
   const plainCache = useRef(new Map<string, Decrypted>());
   const snapshotSeq = useRef(0);
-  const lastMarked = useRef<string | null>(null);
   const noticeTimer = useRef<number | null>(null);
 
   const showNotice = (text: string) => {
@@ -190,22 +246,16 @@ export function ChatView({
   }, [chat.id, limit, cryptoKey]);
 
   // ---------- Marcar como leído cuando está abierta y visible ----------
+  const { markRead } = ws;
   useEffect(() => {
     if (!loaded) return;
     const maybeMark = () => {
-      if (document.visibilityState !== "visible") return;
-      const latest = messages[messages.length - 1];
-      const marker = latest ? latest.id : "vacío";
-      if (lastMarked.current === marker) return;
-      const firstTime = lastMarked.current === null;
-      lastMarked.current = marker;
-      if (!firstTime && latest && latest.uid === user.uid) return; // lo último es tuyo
-      onMarkRead(chat.id);
+      if (document.visibilityState === "visible") markRead(chat);
     };
     maybeMark();
     document.addEventListener("visibilitychange", maybeMark);
     return () => document.removeEventListener("visibilitychange", maybeMark);
-  }, [messages, loaded, chat.id, user.uid, onMarkRead]);
+  }, [loaded, chat, markRead, messages.length]);
 
   // ---------- Scroll ----------
   useLayoutEffect(() => {
@@ -299,15 +349,29 @@ export function ChatView({
 
   // ---------- Envío ----------
 
-  /** Cifra y envía un mensaje. Vuelve en cuanto aparece en pantalla. */
+  /**
+   * Cifra y envía un mensaje, actualiza la vista previa cifrada y el contador
+   * del chat, y avisa a los demás. Vuelve en cuanto aparece en pantalla.
+   */
   const sendPayload = async (db: Firestore, payload: Payload) => {
     const ref = doc(messagesCollection(db, chat.id));
     const sealed = await encryptText(cryptoKey, JSON.stringify(payload), messageAadFor(chat.id, user.uid));
+    const mentions = mentionsOf(payload);
+    const last = await encryptLast(cryptoKey, chat.id, { by: user.uid, text: previewOf(payload), m: mentions });
     plainCache.current.set(ref.id, { payload, state: "ok" });
     const batch = writeBatch(db);
     batch.set(ref, { ct: sealed.ct, iv: sealed.iv, uid: user.uid, v: 2, createdAt: serverTimestamp() });
-    batch.update(doc(db, "chats", chat.id), { lastMessageAt: serverTimestamp(), lastMessageBy: user.uid });
-    return { committed: batch.commit() };
+    batch.update(doc(db, "chats", chat.id), {
+      lastMessageAt: serverTimestamp(),
+      lastMessageBy: user.uid,
+      lastIv: last.iv,
+      lastCt: last.ct,
+      count: increment(1),
+    });
+    const committed = batch.commit().then(() => {
+      notifyChat(() => user.getIdToken(), chat.id, mentions);
+    });
+    return { committed };
   };
 
   /** Sube un archivo cifrado mostrando el progreso y luego envía su mensaje. */
@@ -321,7 +385,7 @@ export function ChatView({
   ) => {
     setUploads((u) => [...u, { localId, name: prepared.name, previewUrl, voice, progress: 0, error: null }]);
     try {
-      const info = await uploadFile(db, cryptoKey, user.uid, prepared, (progress) =>
+      const info = await uploadFile(db, fileStore, user.uid, prepared, (progress) =>
         setUploads((u) => u.map((x) => (x.localId === localId ? { ...x, progress } : x)))
       );
       const { committed } = await sendPayload(db, makePayload(info));
@@ -346,6 +410,7 @@ export function ChatView({
     }
     const files = attachments;
     const re = takeReply();
+    const m = findMentions(text, chat.members, user.uid, ws.nameOf);
     setAttachments([]);
     setError(null);
     setTyping(false);
@@ -354,7 +419,8 @@ export function ChatView({
 
     const sendText = async (withReply?: ReplyRef) => {
       try {
-        const { committed } = await sendPayload(db, withReply ? { t: "text", text, re: withReply } : { t: "text", text });
+        const base: Payload = m.length ? { t: "text", text, m } : { t: "text", text };
+        const { committed } = await sendPayload(db, withReply ? { ...base, re: withReply } : base);
         await committed;
         return true;
       } catch (err) {
@@ -370,7 +436,7 @@ export function ChatView({
     for (const [i, a] of files.entries()) {
       const reHere = i === 0 ? re : undefined;
       await uploadAndSend(db, a.localId, a.prepared, a.previewUrl, (file) => {
-        const base: Payload = caption ? { t: "file", text: caption, file } : { t: "file", file };
+        const base: Payload = caption ? (m.length ? { t: "file", text: caption, file, m } : { t: "file", text: caption, file }) : { t: "file", file };
         return reHere ? { ...base, re: reHere } : base;
       });
     }
@@ -382,7 +448,7 @@ export function ChatView({
     const re = takeReply();
     nearBottom.current = true;
     const { db } = getFirebase();
-    void sendPayload(db, re ? { t: "sticker", file, re } : { t: "sticker", file })
+    void sendPayload(db, re ? { t: "sticker", file, lib: true, re } : { t: "sticker", file, lib: true })
       .then(({ committed }) => committed)
       .catch((err) => setError(errorMessage(err)));
   };
@@ -447,7 +513,7 @@ export function ChatView({
   const taskFromMessage = (m: ChatMessage) => {
     const text =
       m.payload?.t === "text" ? m.payload.text.slice(0, MAX_TASK_LENGTH) : previewOf(m.payload);
-    createTask(getFirebase().db, cryptoKey, user.uid, chat.id, text, m.id)
+    createTask(getFirebase().db, cryptoKey, user.uid, chat, text, m.id)
       .then(() => showNotice("Agregado a pendientes"))
       .catch((err) => setError(errorMessage(err)));
   };
@@ -456,7 +522,22 @@ export function ChatView({
   let lastMineId: string | null = null;
   for (const m of messages) if (m.uid === user.uid) lastMineId = m.id;
 
+  // Quién vio tu último mensaje.
+  const others = chat.members.filter((x) => x !== user.uid);
+  const seenStatus = (m: ChatMessage): { text: string; all: boolean } => {
+    if (m.pending) return { text: "enviando…", all: false };
+    const readers = others.filter((o) => {
+      const at = ws.profiles.get(o)?.lastRead[chat.id];
+      return !!(at && m.createdAt && at >= m.createdAt);
+    });
+    if (readers.length === 0) return { text: "enviado", all: false };
+    if (!group) return { text: "visto", all: true };
+    if (readers.length === others.length) return { text: "visto por todos", all: true };
+    return { text: `visto por ${readers.length <= 2 ? readers.map(ws.nameOf).join(" y ") : readers.length}`, all: false };
+  };
+
   let lastDay = "";
+  let prevUid = "";
   const rows = messages.map((m) => {
     const mine = m.uid === user.uid;
     let separator: string | null = null;
@@ -467,23 +548,28 @@ export function ChatView({
         lastDay = key;
       }
     }
-    const seen = !!(otherRead && m.createdAt && otherRead >= m.createdAt);
-    const status = mine && m.id === lastMineId ? (m.pending ? "enviando…" : seen ? "visto" : "enviado") : "";
-    const footer = [m.createdAt ? formatTime(m.createdAt) : "", m.state === "legacy" ? "sin cifrar" : "", status]
+    const firstOfRun = separator !== null || prevUid !== m.uid;
+    prevUid = m.uid;
+    const status = mine && m.id === lastMineId ? seenStatus(m) : null;
+    const footer = [m.createdAt ? formatTime(m.createdAt) : "", m.state === "legacy" ? "sin cifrar" : "", status?.text ?? ""]
       .filter(Boolean)
       .join(" · ");
+    const isSticker = m.payload?.t === "sticker";
     return (
       <MessageItem
         key={m.id}
         m={m}
         mine={mine}
         myUid={user.uid}
+        ws={ws}
+        group={group || !chat.members.includes(m.uid)}
+        firstOfRun={firstOfRun}
         footer={footer}
-        footerSeen={status === "visto"}
+        footerSeen={!!status?.all}
         separator={separator}
         reactions={reactions.get(m.id) ?? []}
         highlighted={highlight === m.id}
-        cryptoKey={cryptoKey}
+        store={isSticker && m.payload?.t === "sticker" && m.payload.lib ? libStore : fileStore}
         onOpenImage={(file, url) => setViewer({ file, url })}
         onActions={setActionFor}
         onToggleReaction={toggleReaction}
@@ -491,6 +577,18 @@ export function ChatView({
       />
     );
   });
+
+  const typingLabel =
+    typing.length === 0
+      ? ""
+      : !group
+        ? "escribiendo…"
+        : typing.length === 1
+          ? `${ws.nameOf(typing[0])} está escribiendo…`
+          : `${typing.map(ws.nameOf).join(" y ")} están escribiendo…`;
+  const subtitle = group
+    ? chat.members.map((x) => (x === user.uid ? "Tú" : ws.nameOf(x))).join(", ")
+    : `${chat.group}${chat.archived ? " · archivada" : ""}`;
 
   return (
     <div className="flex h-full min-h-0">
@@ -508,24 +606,28 @@ export function ChatView({
           >
             <BackIcon />
           </button>
-          <div className="min-w-0 flex-1 pl-1">
-            <p className="truncate text-[15px] font-medium">{chat.name}</p>
-            <p className="truncate text-xs text-neutral-500">
-              {otherTyping ? (
-                <span className="text-sky-400">escribiendo…</span>
-              ) : (
-                <>
-                  {chat.group}
-                  {chat.archived ? " · archivada" : ""}
-                </>
-              )}
-            </p>
-          </div>
           <button
-            onClick={() => setTasksOpen((v) => !v)}
-            className={`relative rounded-full p-2 hover:bg-neutral-900 ${tasksOpen ? "text-neutral-100" : "text-neutral-300"}`}
+            type="button"
+            onClick={() => setPanel((p) => (p === "info" ? null : "info"))}
+            className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg py-0.5 pl-1 text-left"
+            aria-label="Información del chat"
+          >
+            <ChatAvatar ws={ws} chat={chat} myUid={user.uid} size={36} />
+            <span className="min-w-0">
+              <span className="flex items-center gap-1.5">
+                <span className="truncate text-[15px] font-medium">{chat.name}</span>
+                {muted && <BellOffIcon className="h-3.5 w-3.5 shrink-0 text-neutral-500" />}
+              </span>
+              <span className="block truncate text-xs text-neutral-500">
+                {typingLabel ? <span className="text-emerald-400">{typingLabel}</span> : subtitle}
+              </span>
+            </span>
+          </button>
+          <button
+            onClick={() => setPanel((p) => (p === "tasks" ? null : "tasks"))}
+            className={`relative rounded-full p-2 hover:bg-neutral-900 ${panel === "tasks" ? "text-neutral-100" : "text-neutral-300"}`}
             aria-label={`Pendientes (${openTasks.length})`}
-            aria-pressed={tasksOpen}
+            aria-pressed={panel === "tasks"}
           >
             <TasksIcon />
             {openTasks.length > 0 && (
@@ -549,6 +651,24 @@ export function ChatView({
                   <button
                     onClick={() => {
                       setMenuOpen(false);
+                      setPanel("info");
+                    }}
+                    className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
+                  >
+                    Información y miembros
+                  </button>
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
+                      ws.toggleMute(chat.id);
+                    }}
+                    className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
+                  >
+                    {muted ? "Quitar silencio" : "Silenciar"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
                       onEdit();
                     }}
                     className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
@@ -558,7 +678,7 @@ export function ChatView({
                   <button
                     onClick={() => {
                       setMenuOpen(false);
-                      onToggleArchive();
+                      void setChatArchived(getFirebase().db, chat.id, !chat.archived).catch(() => undefined);
                     }}
                     className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
                   >
@@ -618,7 +738,7 @@ export function ChatView({
           ))}
 
           {otherTyping && (
-            <div className="mb-1.5 flex justify-start" aria-label="Tu socio está escribiendo">
+            <div className="mb-1.5 flex justify-start" aria-label={typingLabel || "escribiendo"}>
               <div className="flex items-center gap-1 rounded-2xl bg-neutral-800 px-3.5 py-3">
                 {[0, 1, 2].map((i) => (
                   <span
@@ -635,7 +755,7 @@ export function ChatView({
         {chat.archived && (
           <div className="shrink-0 border-t border-neutral-900 px-4 py-2 text-xs text-neutral-500">
             Esta conversación está archivada.{" "}
-            <button onClick={onToggleArchive} className="underline">
+            <button onClick={() => void setChatArchived(getFirebase().db, chat.id, false).catch(() => undefined)} className="underline">
               Desarchivar
             </button>
           </div>
@@ -657,11 +777,12 @@ export function ChatView({
         )}
 
         <Composer
-          cryptoKey={cryptoKey}
+          libKey={session.ws}
           uid={user.uid}
+          mentionables={group ? others.map((o) => ({ uid: o, name: ws.nameOf(o) })).filter((o) => o.name !== "Miembro") : []}
           attachments={attachments}
           preparing={preparing}
-          replyTo={replyTo ? { author: replyTo.uid === user.uid ? "ti" : "tu socio", preview: replyTo.preview } : null}
+          replyTo={replyTo ? { author: replyTo.uid === user.uid ? "ti" : ws.nameOf(replyTo.uid), preview: replyTo.preview } : null}
           focusSignal={focusSignal}
           onAddFiles={(files) => void addFiles(files)}
           onRemoveAttachment={removeAttachment}
@@ -679,14 +800,26 @@ export function ChatView({
         )}
       </div>
 
-      {tasksOpen && (
+      {panel === "tasks" && (
         <TasksPanel
           chat={chat}
+          ws={ws}
           openTasks={openTasks}
           uid={user.uid}
           cryptoKey={cryptoKey}
           onJump={jumpTo}
-          onClose={() => setTasksOpen(false)}
+          onClose={() => setPanel(null)}
+        />
+      )}
+
+      {panel === "info" && (
+        <ChatInfoPanel
+          chat={chat}
+          session={session}
+          ws={ws}
+          onEdit={onEdit}
+          onClose={() => setPanel(null)}
+          onLeft={onLeft}
         />
       )}
 
@@ -717,7 +850,7 @@ export function ChatView({
         />
       )}
 
-      {viewer && <Lightbox file={viewer.file} url={viewer.url} cryptoKey={cryptoKey} onClose={() => setViewer(null)} />}
+      {viewer && <Lightbox file={viewer.file} url={viewer.url} store={fileStore} onClose={() => setViewer(null)} />}
     </div>
   );
 }

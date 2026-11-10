@@ -2,9 +2,9 @@
  * useTyping.ts — "escribiendo…" en vivo.
  *
  * Mientras escribes se actualiza chats/{chatId}/typing/{uid} como mucho cada
- * 3 s; al vaciar la caja, enviar o salir se pone en null. Del otro lado se
- * muestra "escribiendo…" durante 6 s después de cada aviso, así que si el
- * otro cierra la pestaña a media frase, el aviso se apaga solo.
+ * 3 s; al vaciar la caja, enviar o salir se pone en null. Los demás ven
+ * "escribiendo…" durante 6 s después de cada aviso, así que si alguien cierra
+ * la pestaña a media frase, el aviso se apaga solo. En grupos se sabe quién.
  * Solo se guarda la hora, nunca lo que se está escribiendo.
  */
 
@@ -22,17 +22,17 @@ function toMillis(value: unknown): number | null {
 }
 
 export function useTyping(chatId: string, uid: string) {
-  const [otherTyping, setOtherTyping] = useState(false);
+  const [typing, setTypingList] = useState<string[]>([]);
   const lastSent = useRef(0);
   const active = useRef(false);
-  const lastSeenAt = useRef<number | null | undefined>(undefined); // undefined = aún no visto
-  const hideTimer = useRef<number | null>(null);
+  const lastSeen = useRef(new Map<string, number | null>()); // uid -> último aviso visto
+  const timers = useRef(new Map<string, number>());
 
   const write = useCallback(
-    (typing: boolean) => {
+    (on: boolean) => {
       const { db } = getFirebase();
       void setDoc(doc(db, "chats", chatId, "typing", uid), {
-        at: typing ? serverTimestamp() : null,
+        at: on ? serverTimestamp() : null,
       }).catch(() => undefined);
     },
     [chatId, uid]
@@ -40,8 +40,8 @@ export function useTyping(chatId: string, uid: string) {
 
   /** Llamar cuando cambia el texto: `true` si hay algo escrito. */
   const setTyping = useCallback(
-    (typing: boolean) => {
-      if (typing) {
+    (on: boolean) => {
+      if (on) {
         const now = Date.now();
         if (now - lastSent.current < REFRESH_MS) return;
         lastSent.current = now;
@@ -56,35 +56,47 @@ export function useTyping(chatId: string, uid: string) {
     [write]
   );
 
-  // Lo que hace el otro.
+  // Lo que hacen los demás.
   useEffect(() => {
     const { db } = getFirebase();
-    lastSeenAt.current = undefined;
-    const hide = () => {
-      if (hideTimer.current) window.clearTimeout(hideTimer.current);
-      hideTimer.current = null;
-      setOtherTyping(false);
+    lastSeen.current = new Map();
+    const shown = new Set<string>();
+    const publish = () => setTypingList([...shown]);
+    const hide = (who: string) => {
+      const t = timers.current.get(who);
+      if (t) window.clearTimeout(t);
+      timers.current.delete(who);
+      if (shown.delete(who)) publish();
     };
     const unsubscribe = onSnapshot(
       collection(db, "chats", chatId, "typing"),
       (snap) => {
-        const other = snap.docs.find((d) => d.id !== uid);
-        if (!other) return;
-        const at = toMillis(other.data().at);
-        const previous = lastSeenAt.current;
-        lastSeenAt.current = at;
-        if (at === null) return hide();
-        if (previous === at) return; // sin novedad del otro
-        if (previous === undefined && Math.abs(Date.now() - at) > STALE_ON_LOAD_MS) return; // aviso viejo
-        setOtherTyping(true);
-        if (hideTimer.current) window.clearTimeout(hideTimer.current);
-        hideTimer.current = window.setTimeout(hide, SHOW_MS);
+        for (const d of snap.docs) {
+          if (d.id === uid) continue;
+          const at = toMillis(d.data().at);
+          const firstLook = !lastSeen.current.has(d.id);
+          const previous = lastSeen.current.get(d.id);
+          lastSeen.current.set(d.id, at);
+          if (at === null) {
+            hide(d.id);
+            continue;
+          }
+          if (!firstLook && previous === at) continue; // sin novedad
+          if (firstLook && Math.abs(Date.now() - at) > STALE_ON_LOAD_MS) continue; // aviso viejo
+          shown.add(d.id);
+          publish();
+          const old = timers.current.get(d.id);
+          if (old) window.clearTimeout(old);
+          timers.current.set(d.id, window.setTimeout(() => hide(d.id), SHOW_MS));
+        }
       },
       () => undefined
     );
     return () => {
       unsubscribe();
-      hide();
+      for (const t of timers.current.values()) window.clearTimeout(t);
+      timers.current.clear();
+      setTypingList([]);
     };
   }, [chatId, uid]);
 
@@ -100,5 +112,5 @@ export function useTyping(chatId: string, uid: string) {
     };
   }, [setTyping]);
 
-  return { otherTyping, setTyping };
+  return { typing, setTyping };
 }

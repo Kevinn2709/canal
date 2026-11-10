@@ -1,30 +1,30 @@
 "use client";
 
 /**
- * StickerPanel.tsx — Biblioteca de stickers (compartida entre los dos).
+ * StickerPanel.tsx — Biblioteca de stickers (compartida por todos los miembros).
  * Tocar uno lo envía. "+" convierte cualquier imagen en sticker. "Editar"
  * permite quitar stickers de la biblioteca.
  */
 
 import { useEffect, useRef, useState } from "react";
 import type { FileInfo } from "@/lib/chats";
-import { getFileUrl } from "@/lib/files";
+import { getFileUrl, libraryFileStore } from "@/lib/files";
 import { getFirebase } from "@/lib/firebase";
 import { addSticker, hideSticker } from "@/lib/stickers";
 import { useStickers } from "@/hooks/useStickers";
 import { CloseIcon, PlusIcon } from "./Icons";
 
-function StickerThumb({ file, cryptoKey }: { file: FileInfo; cryptoKey: CryptoKey }) {
+function StickerThumb({ file, ws }: { file: FileInfo; ws: CryptoKey }) {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    getFileUrl(getFirebase().db, cryptoKey, file)
+    getFileUrl(getFirebase().db, libraryFileStore(ws), file)
       .then((u) => !cancelled && setUrl(u))
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [file, cryptoKey]);
+  }, [file, ws]);
   return url ? (
     <img src={url} alt="sticker" className="h-full w-full object-contain" />
   ) : (
@@ -33,15 +33,15 @@ function StickerThumb({ file, cryptoKey }: { file: FileInfo; cryptoKey: CryptoKe
 }
 
 export function StickerPanel({
-  cryptoKey,
+  ws,
   uid,
   onPick,
 }: {
-  cryptoKey: CryptoKey;
+  ws: CryptoKey;
   uid: string;
   onPick: (file: FileInfo) => void;
 }) {
-  const stickers = useStickers(cryptoKey);
+  const stickers = useStickers(ws);
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +53,7 @@ export function StickerPanel({
     setError(null);
     for (const f of files.slice(0, 10)) {
       try {
-        await addSticker(getFirebase().db, cryptoKey, uid, f);
+        await addSticker(getFirebase().db, ws, uid, f);
       } catch (err) {
         setError(err instanceof Error ? err.message : "No se pudo agregar el sticker.");
       }
@@ -94,7 +94,7 @@ export function StickerPanel({
               className="h-full w-full rounded-lg p-1 hover:bg-neutral-900"
               aria-label="Enviar sticker"
             >
-              <StickerThumb file={s.file} cryptoKey={cryptoKey} />
+              <StickerThumb file={s.file} ws={ws} />
             </button>
             {editing && (
               <button

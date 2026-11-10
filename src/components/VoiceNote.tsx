@@ -10,19 +10,19 @@
 
 import { useEffect, useRef, useState } from "react";
 import { formatDuration, type FileInfo } from "@/lib/chats";
-import { downloadFile, getFileUrl } from "@/lib/files";
+import { downloadFile, getFileUrl, type FileStore } from "@/lib/files";
 import { getFirebase } from "@/lib/firebase";
 import { DownloadIcon, PauseIcon, PlayIcon } from "./Icons";
 
 export function VoiceNote({
   file,
   duration,
-  cryptoKey,
+  store,
   mine,
 }: {
   file: FileInfo;
   duration: number;
-  cryptoKey: CryptoKey;
+  store: FileStore;
   mine: boolean;
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -60,7 +60,7 @@ export function VoiceNote({
     setState("loading");
     wantPlay.current = true;
     try {
-      setUrl(await getFileUrl(getFirebase().db, cryptoKey, file));
+      setUrl(await getFileUrl(getFirebase().db, store, file));
       setState("idle");
     } catch {
       wantPlay.current = false;
@@ -80,7 +80,7 @@ export function VoiceNote({
         </div>
         <button
           type="button"
-          onClick={() => void downloadFile(getFirebase().db, cryptoKey, file)}
+          onClick={() => void downloadFile(getFirebase().db, store, file)}
           className="shrink-0 rounded-full p-2 hover:bg-black/10"
           aria-label="Descargar nota de voz"
         >

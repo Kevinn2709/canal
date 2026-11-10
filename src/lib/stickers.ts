@@ -1,15 +1,20 @@
 /**
- * stickers.ts — Biblioteca de stickers compartida entre los dos.
+ * stickers.ts — Biblioteca de stickers compartida entre todos los miembros.
  *
  * Cualquiera sube una imagen (PNG con transparencia, GIF animado, foto…) y se
- * convierte en sticker: se reduce a 512 px y se guarda cifrada como cualquier
- * archivo. stickers/{id} solo guarda, cifrados, los datos del archivo.
- * "Quitar" lo oculta de la biblioteca (los mensajes ya enviados lo conservan).
+ * convierte en sticker: se reduce a 512 px y se guarda cifrada con la llave
+ * del espacio. library/{id} guarda, cifrados, los datos del archivo; los
+ * trozos van en libfiles/. "Quitar" lo oculta de la biblioteca (los mensajes
+ * ya enviados lo conservan).
+ *
+ * Los stickers de la versión anterior (de los dos fundadores) se copian una
+ * sola vez a la biblioteca nueva.
  */
 
 import {
   collection,
   doc,
+  getDoc,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -17,7 +22,7 @@ import {
 } from "firebase/firestore";
 import { decryptText, encryptText, type Sealed } from "./crypto";
 import { parseFileInfo, type FileInfo } from "./chats";
-import { uploadFile, type PreparedFile } from "./files";
+import { getFileBlob, libraryFileStore, uploadFile, type PreparedFile } from "./files";
 
 const STICKER_SIZE = 512;
 const MAX_GIF_SIZE = 1.5 * 1024 * 1024;
@@ -80,38 +85,65 @@ export async function prepareSticker(file: File): Promise<PreparedFile> {
   return { blob, name: `sticker.${ext}`, mime: blob.type, w, h, isImage: true };
 }
 
+async function saveSticker(db: Firestore, ws: CryptoKey, uid: string, prepared: PreparedFile, id?: string) {
+  const info = await uploadFile(db, libraryFileStore(ws), uid, prepared, () => undefined);
+  const ref = id ? doc(db, "library", id) : doc(collection(db, "library"));
+  const sealed = await encryptText(ws, JSON.stringify(info), stickerAad(ref.id));
+  await setDoc(ref, { ct: sealed.ct, iv: sealed.iv, uid, createdAt: serverTimestamp(), hidden: false });
+}
+
 /** Sube un sticker nuevo a la biblioteca. */
-export async function addSticker(
-  db: Firestore,
-  key: CryptoKey,
-  uid: string,
-  file: File
-): Promise<void> {
-  const prepared = await prepareSticker(file);
-  const info = await uploadFile(db, key, uid, prepared, () => undefined);
-  const ref = doc(collection(db, "stickers"));
-  const sealed = await encryptText(key, JSON.stringify(info), stickerAad(ref.id));
-  await setDoc(ref, {
-    ct: sealed.ct,
-    iv: sealed.iv,
-    uid,
-    createdAt: serverTimestamp(),
-    hidden: false,
-  });
+export async function addSticker(db: Firestore, ws: CryptoKey, uid: string, file: File): Promise<void> {
+  await saveSticker(db, ws, uid, await prepareSticker(file));
 }
 
 export async function hideSticker(db: Firestore, id: string): Promise<void> {
-  await updateDoc(doc(db, "stickers", id), { hidden: true });
+  await updateDoc(doc(db, "library", id), { hidden: true });
 }
 
-export async function decryptSticker(
-  key: CryptoKey,
-  id: string,
-  sealed: Sealed
-): Promise<FileInfo | null> {
+export async function decryptSticker(key: CryptoKey, id: string, sealed: Sealed): Promise<FileInfo | null> {
   try {
     return parseFileInfo(JSON.parse(await decryptText(key, sealed, stickerAad(id))));
   } catch {
     return null;
   }
+}
+
+/**
+ * Copia a la biblioteca nueva los stickers de la versión anterior (cifrados
+ * con la llave anterior). Se puede llamar varias veces: los ya copiados se
+ * saltan (library/legacy-{id}).
+ */
+export async function migrateLegacyStickers(
+  db: Firestore,
+  legacy: CryptoKey,
+  ws: CryptoKey,
+  uid: string,
+  legacyDocs: { id: string; data: Record<string, unknown> }[]
+): Promise<number> {
+  let copied = 0;
+  for (const d of legacyDocs) {
+    if (d.data.hidden === true) continue;
+    const targetId = `legacy-${d.id}`;
+    try {
+      if ((await getDoc(doc(db, "library", targetId))).exists()) continue;
+      const info = await decryptSticker(legacy, d.id, {
+        iv: String(d.data.iv ?? ""),
+        ct: String(d.data.ct ?? ""),
+      });
+      if (!info) continue;
+      const blob = await getFileBlob(db, { key: legacy, base: ["files"] }, info);
+      await saveSticker(
+        db,
+        ws,
+        uid,
+        { blob, name: info.name, mime: info.mime, w: info.w, h: info.h, isImage: true },
+        targetId
+      );
+      copied++;
+    } catch {
+      // Otro fundador lo copió al mismo tiempo, o el archivo no está: se sigue.
+    }
+  }
+  return copied;
 }

@@ -9,6 +9,7 @@
  * - Micrófono (cuando la caja está vacía) para notas de voz: tocar para
  *   empezar, luego enviar o descartar.
  * - Barra de "Respondiendo a…" cuando eliges responder un mensaje.
+ * - En grupos, al escribir "@" aparece la lista de miembros para mencionar.
  */
 
 import {
@@ -21,6 +22,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { formatDuration, type FileInfo } from "@/lib/chats";
+import { normalizePhrase } from "@/lib/crypto";
 import { formatSize, type PreparedFile } from "@/lib/files";
 import { MAX_VOICE_SECONDS, useVoiceRecorder, type Recording } from "@/hooks/useVoiceRecorder";
 import { StickerPanel } from "./StickerPanel";
@@ -34,9 +36,12 @@ export interface PendingAttachment {
 
 export const MAX_LENGTH = 4000;
 
+const MENTION_RE = /(^|\s)@([^\s@]{0,30})$/;
+
 export function Composer({
-  cryptoKey,
+  libKey,
   uid,
+  mentionables,
   attachments,
   preparing,
   replyTo,
@@ -49,8 +54,9 @@ export function Composer({
   onSendVoice,
   onTyping,
 }: {
-  cryptoKey: CryptoKey;
+  libKey: CryptoKey | null;
   uid: string;
+  mentionables: { uid: string; name: string }[];
   attachments: PendingAttachment[];
   preparing: boolean;
   replyTo: { author: string; preview: string } | null;
@@ -65,6 +71,7 @@ export function Composer({
 }) {
   const [draft, setDraft] = useState("");
   const [stickersOpen, setStickersOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isTouch = useRef(false);
@@ -92,10 +99,35 @@ export function Composer({
 
   const canSend = draft.trim().length > 0 || attachments.length > 0;
 
+  const updateMention = (value: string, caret: number) => {
+    if (mentionables.length === 0) return setMentionQuery(null);
+    const match = value.slice(0, caret).match(MENTION_RE);
+    setMentionQuery(match ? match[2] : null);
+  };
+
+  const suggestions =
+    mentionQuery === null
+      ? []
+      : mentionables.filter((m) => normalizePhrase(m.name).includes(normalizePhrase(mentionQuery)) || !mentionQuery);
+
+  const pickMention = (name: string) => {
+    const el = inputRef.current;
+    const caret = el ? el.selectionStart ?? draft.length : draft.length;
+    const before = draft.slice(0, caret).replace(MENTION_RE, (_all, space: string) => `${space}@${name} `);
+    const next = before + draft.slice(caret);
+    setDraft(next);
+    setMentionQuery(null);
+    window.setTimeout(() => {
+      el?.focus();
+      el?.setSelectionRange(before.length, before.length);
+    }, 0);
+  };
+
   const submit = async () => {
     const text = draft.trim();
     if ((!text && attachments.length === 0) || preparing) return;
     setDraft("");
+    setMentionQuery(null);
     const ok = await onSend(text);
     if (!ok) setDraft((current) => (current ? current : text));
   };
@@ -106,6 +138,15 @@ export function Composer({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (suggestions.length > 0 && (e.key === "Enter" || e.key === "Tab") && !e.shiftKey) {
+      e.preventDefault();
+      pickMention(suggestions[0].name);
+      return;
+    }
+    if (e.key === "Escape" && mentionQuery !== null) {
+      setMentionQuery(null);
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && !isTouch.current) {
       e.preventDefault();
       void submit();
@@ -167,9 +208,28 @@ export function Composer({
         </div>
       )}
 
-      {stickersOpen && !voice.recording && (
+      {suggestions.length > 0 && !voice.recording && (
+        <div className="border-t border-neutral-900 px-2 pt-2" role="listbox" aria-label="Mencionar a">
+          {suggestions.map((m) => (
+            <button
+              key={m.uid}
+              type="button"
+              role="option"
+              aria-selected={false}
+              onMouseDown={(e: { preventDefault(): void }) => e.preventDefault()}
+              onClick={() => pickMention(m.name)}
+              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-neutral-200 hover:bg-neutral-900"
+            >
+              <span className="text-sky-400">@</span>
+              {m.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {stickersOpen && !voice.recording && libKey && (
         <StickerPanel
-          cryptoKey={cryptoKey}
+          ws={libKey}
           uid={uid}
           onPick={(file) => {
             setStickersOpen(false);
@@ -253,7 +313,10 @@ export function Composer({
               ref={inputRef}
               rows={1}
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                updateMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
+              }}
               onKeyDown={onKeyDown}
               onPaste={onPaste}
               maxLength={MAX_LENGTH}

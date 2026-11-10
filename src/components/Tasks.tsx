@@ -11,19 +11,24 @@
  */
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { collection, onSnapshot, query, where } from "firebase/firestore";
+import { onSnapshot, query, where } from "firebase/firestore";
 import { getFirebase } from "@/lib/firebase";
-import { MAX_TASK_LENGTH, createTask, decryptTask, setTaskDone, type Task } from "@/lib/tasks";
+import { MAX_TASK_LENGTH, createTask, decryptTask, setTaskDone, tasksCollection, type Task } from "@/lib/tasks";
 import type { ChatInfo } from "@/lib/chats";
+import type { Workspace } from "@/hooks/useWorkspace";
 import { listTime } from "@/lib/format";
 import { BackIcon, CloseIcon } from "./Icons";
 
 function TaskItem({
   task,
+  chat,
+  ws,
   uid,
   onJump,
 }: {
   task: Task;
+  chat: { id: string; legacy: boolean };
+  ws: Workspace;
   uid: string;
   onJump?: (msgId: string) => void;
 }) {
@@ -31,12 +36,12 @@ function TaskItem({
   const toggle = async () => {
     setBusy(true);
     try {
-      await setTaskDone(getFirebase().db, task.id, uid, !task.done);
+      await setTaskDone(getFirebase().db, chat, task.id, uid, !task.done);
     } finally {
       setBusy(false);
     }
   };
-  const who = (id: string | null) => (id === uid ? "tú" : "tu socio");
+  const who = (id: string | null) => (id === uid ? "tú" : id ? ws.nameOf(id) : "alguien");
   const meta = task.done
     ? `Hecho por ${who(task.doneBy)}${task.doneAt ? ` · ${listTime(task.doneAt)}` : ""}`
     : `De ${who(task.createdBy)}${task.createdAt ? ` · ${listTime(task.createdAt)}` : ""}`;
@@ -86,6 +91,7 @@ function TaskItem({
 
 export function TasksPanel({
   chat,
+  ws,
   openTasks,
   uid,
   cryptoKey,
@@ -93,6 +99,7 @@ export function TasksPanel({
   onClose,
 }: {
   chat: ChatInfo;
+  ws: Workspace;
   openTasks: Task[];
   uid: string;
   cryptoKey: CryptoKey;
@@ -110,7 +117,9 @@ export function TasksPanel({
     if (!showDone) return;
     const { db } = getFirebase();
     return onSnapshot(
-      query(collection(db, "tasks"), where("chatId", "==", chat.id), where("done", "==", true)),
+      chat.legacy
+        ? query(tasksCollection(db, chat), where("chatId", "==", chat.id), where("done", "==", true))
+        : query(tasksCollection(db, chat), where("done", "==", true)),
       (snap) => {
         const current = ++seq.current;
         void Promise.all(
@@ -123,7 +132,7 @@ export function TasksPanel({
       },
       () => setDoneTasks([])
     );
-  }, [showDone, chat.id, cryptoKey]);
+  }, [showDone, chat, cryptoKey]);
 
   const add = async (e: FormEvent) => {
     e.preventDefault();
@@ -131,7 +140,7 @@ export function TasksPanel({
     if (!value || busy) return;
     setBusy(true);
     try {
-      await createTask(getFirebase().db, cryptoKey, uid, chat.id, value);
+      await createTask(getFirebase().db, cryptoKey, uid, chat, value);
       setText("");
     } finally {
       setBusy(false);
@@ -190,7 +199,7 @@ export function TasksPanel({
         ) : (
           <ul className="divide-y divide-neutral-900">
             {openTasks.map((t) => (
-              <TaskItem key={t.id} task={t} uid={uid} onJump={jump} />
+              <TaskItem key={t.id} task={t} chat={chat} ws={ws} uid={uid} onJump={jump} />
             ))}
           </ul>
         )}
@@ -208,7 +217,7 @@ export function TasksPanel({
           ) : (
             <ul className="divide-y divide-neutral-900">
               {doneTasks.map((t) => (
-                <TaskItem key={t.id} task={t} uid={uid} onJump={jump} />
+                <TaskItem key={t.id} task={t} chat={chat} ws={ws} uid={uid} onJump={jump} />
               ))}
             </ul>
           )
@@ -219,14 +228,14 @@ export function TasksPanel({
 }
 
 export function AllTasks({
+  ws,
   tasks,
-  chats,
   uid,
   onOpenChat,
   onBack,
 }: {
+  ws: Workspace;
   tasks: Task[];
-  chats: ChatInfo[];
   uid: string;
   onOpenChat: (chatId: string) => void;
   onBack: () => void;
@@ -240,7 +249,7 @@ export function AllTasks({
   }
   const projects = new Map<string, { chat: ChatInfo; tasks: Task[] }[]>();
   for (const [chatId, list] of byChat) {
-    const chat = chats.find((c) => c.id === chatId);
+    const chat = ws.chats.find((c) => c.id === chatId);
     if (!chat) continue;
     const entries = projects.get(chat.group) ?? [];
     entries.push({ chat, tasks: list });
@@ -284,7 +293,7 @@ export function AllTasks({
                   </button>
                   <ul className="divide-y divide-neutral-900">
                     {list.map((t) => (
-                      <TaskItem key={t.id} task={t} uid={uid} />
+                      <TaskItem key={t.id} task={t} chat={chat} ws={ws} uid={uid} />
                     ))}
                   </ul>
                 </div>

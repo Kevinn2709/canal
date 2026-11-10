@@ -1,18 +1,19 @@
 /**
- * crypto.ts — Cifrado de extremo a extremo con una frase compartida.
+ * crypto.ts — Piezas de cifrado (Web Crypto, sin dependencias).
  *
- * - La frase se normaliza (sin mayúsculas, acentos, signos ni espacios de
- *   más) para que el autocorrector del teléfono no la cambie.
- * - De la frase sale una llave AES-GCM de 256 bits con PBKDF2-SHA256
- *   (600 000 iteraciones y una sal aleatoria guardada en Firestore).
- * - Cada mensaje se cifra con un IV aleatorio. El remitente va como "datos
- *   adicionales autenticados": si alguien cambia en la base de datos quién
- *   envió un mensaje, ese mensaje deja de descifrarse.
- * - Una "prueba de verificación" (un texto fijo cifrado con la llave) permite
- *   saber si una frase es la correcta sin guardar la frase en ningún lado.
+ * - Frases: se normalizan (sin mayúsculas, acentos, signos ni espacios de
+ *   más) y de ellas sale una llave AES-GCM de 256 bits con PBKDF2-SHA256
+ *   (600 000 iteraciones y una sal aleatoria).
+ * - Cada mensaje se cifra con AES-GCM y un IV aleatorio. Los "datos
+ *   adicionales autenticados" ligan el texto a su conversación y remitente:
+ *   si alguien los cambia en la base de datos, deja de descifrarse.
+ * - Identidad: cada persona tiene un par de llaves ECDH P-256. La privada se
+ *   guarda cifrada con su frase personal; la pública es visible para los
+ *   demás miembros. Con ECDH + HKDF dos personas obtienen una llave común
+ *   para pasarse, cifradas, las llaves de cada conversación.
  *
- * El servidor solo ve texto cifrado. La frase y la llave nunca salen del
- * dispositivo.
+ * El servidor solo ve texto cifrado. Las frases y las llaves nunca salen del
+ * dispositivo sin cifrar.
  */
 
 const encoder = new TextEncoder();
@@ -169,4 +170,145 @@ export async function verifyKey(key: CryptoKey, check: Sealed): Promise<boolean>
   } catch {
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Llaves AES en bruto (llave de cada conversación, del espacio, la anterior)
+// ---------------------------------------------------------------------------
+
+/** 32 bytes aleatorios: una llave AES-256 nueva. */
+export function randomKeyBytes(): Uint8Array<ArrayBuffer> {
+  return crypto.getRandomValues(new Uint8Array(32));
+}
+
+/** Importa una llave AES-GCM de 32 bytes (no extraíble). */
+export function importAesKey(raw: Uint8Array): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", new Uint8Array(raw), { name: "AES-GCM" }, false, [
+    "encrypt",
+    "decrypt",
+  ]);
+}
+
+/**
+ * Los mismos 32 bytes que deriveKey() con la misma frase, sal e iteraciones,
+ * pero en bruto, para poder guardarlos cifrados o pasarlos a otro miembro.
+ */
+export async function deriveRawKey(
+  phrase: string,
+  saltB64: string,
+  iterations: number
+): Promise<Uint8Array<ArrayBuffer>> {
+  const material = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(normalizePhrase(phrase)),
+    "PBKDF2",
+    false,
+    ["deriveBits"]
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: base64ToBytes(saltB64), iterations, hash: "SHA-256" },
+    material,
+    256
+  );
+  return new Uint8Array(bits);
+}
+
+// ---------------------------------------------------------------------------
+// Identidad: par de llaves ECDH P-256 de cada persona
+// ---------------------------------------------------------------------------
+
+const P256 = { name: "ECDH", namedCurve: "P-256" } as const;
+
+export interface Identity {
+  priv: CryptoKey; // privada, no extraíble
+  pub: string; // pública (SPKI en base64)
+  fp: string; // huella: SHA-256 de la pública, en hexadecimal
+}
+
+/** Crea una identidad nueva. Devuelve también la privada exportada para guardarla cifrada. */
+export async function generateIdentity(): Promise<{ identity: Identity; privPkcs8: string }> {
+  const pair = await crypto.subtle.generateKey(P256, true, ["deriveBits"]);
+  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
+  const spki = new Uint8Array(await crypto.subtle.exportKey("spki", pair.publicKey));
+  const privPkcs8 = bytesToBase64(pkcs8);
+  pkcs8.fill(0);
+  return { identity: await importIdentity(privPkcs8, bytesToBase64(spki)), privPkcs8 };
+}
+
+export async function importIdentity(privPkcs8: string, pub: string): Promise<Identity> {
+  const priv = await crypto.subtle.importKey("pkcs8", base64ToBytes(privPkcs8), P256, false, [
+    "deriveBits",
+  ]);
+  return { priv, pub, fp: await fingerprint(pub) };
+}
+
+/** Huella de una llave pública: SHA-256 en hexadecimal (64 caracteres). */
+export async function fingerprint(pub: string): Promise<string> {
+  const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", base64ToBytes(pub)));
+  return Array.from(hash, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Código de seguridad para comparar en persona o por llamada: 20 cifras en
+ * cuatro grupos, sacadas de la huella. Si dos personas ven el mismo código
+ * para una cuenta, tienen la misma llave pública de esa cuenta.
+ */
+export function securityCode(fp: string): string {
+  const groups: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    const n = parseInt(fp.slice(i * 10, i * 10 + 10), 16) % 100000;
+    groups.push(String(n).padStart(5, "0"));
+  }
+  return groups.join(" ");
+}
+
+/**
+ * Llave común entre dos identidades (ECDH + HKDF-SHA256). Sale la misma de
+ * los dos lados: (mi privada, su pública) = (su privada, mi pública).
+ * `info` liga la llave a un uso concreto, a quién la envía y a quién.
+ */
+async function pairKey(priv: CryptoKey, otherPub: string, info: string): Promise<CryptoKey> {
+  const pub = await crypto.subtle.importKey("spki", base64ToBytes(otherPub), P256, false, []);
+  const shared = await crypto.subtle.deriveBits({ name: "ECDH", public: pub }, priv, 256);
+  const hkdf = await crypto.subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(32), info: encoder.encode(info) },
+    hkdf,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+function pairInfo(context: string, fromUid: string, toUid: string): string {
+  return `canal:pair:v1:${context}:${fromUid}>${toUid}`;
+}
+
+/**
+ * Cifra un texto de `fromUid` para `toUid`. Solo `toUid` (con su privada) o
+ * `fromUid` pueden abrirlo, y al abrirlo se comprueba que lo creó quien tiene
+ * la privada de `fromUid`.
+ */
+export async function sealFor(
+  myPriv: CryptoKey,
+  theirPub: string,
+  fromUid: string,
+  toUid: string,
+  context: string,
+  plaintext: string
+): Promise<Sealed> {
+  const key = await pairKey(myPriv, theirPub, pairInfo(context, fromUid, toUid));
+  return encryptText(key, plaintext, context);
+}
+
+export async function openFrom(
+  myPriv: CryptoKey,
+  theirPub: string,
+  fromUid: string,
+  toUid: string,
+  context: string,
+  sealed: Sealed
+): Promise<string> {
+  const key = await pairKey(myPriv, theirPub, pairInfo(context, fromUid, toUid));
+  return decryptText(key, sealed, context);
 }
