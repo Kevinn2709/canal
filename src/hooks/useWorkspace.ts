@@ -1,7 +1,13 @@
 /**
  * useWorkspace.ts — Todo lo que la lista de chats necesita, en vivo.
  *
- * - Miembros (users/) con su perfil descifrado y su foto (avatars/).
+ * - Personas con su perfil descifrado y su foto. Un fundador las ve a todas
+ *   (users/ y avatars/). Un miembro solo puede leer su propio users/; a los
+ *   demás los conoce por la copia que cada chat guarda de sus miembros
+ *   (chats/{id}/people y chats/{id}/avatars), así que solo ve a quienes
+ *   comparten un chat con él. Esas copias las mantiene al día cada quien para
+ *   sí mismo y los fundadores para todos los miembros de sus chats; las
+ *   reglas solo aceptan copias idénticas al original.
  * - Conversaciones donde estás (las de antes, si eres fundador), con su
  *   nombre, proyecto y último mensaje descifrados.
  * - Llaves de cada conversación (chats/{id}/keys): abre la tuya y, si a otro
@@ -105,6 +111,25 @@ function useKeyedListeners(ids: string[], subscribe: (id: string) => Unsubscribe
   );
 }
 
+/** Un documento por persona en cada chat (copias de perfil, foto y leídos). */
+type PerChat = Map<string, Map<string, DocumentData>>;
+
+function setPerChat(chatId: string, docs: { id: string; data: () => DocumentData }[]) {
+  return (prev: PerChat): PerChat => {
+    const m = new Map<string, DocumentData>();
+    for (const d of docs) m.set(d.id, d.data());
+    return new Map(prev).set(chatId, m);
+  };
+}
+
+function dropPerChat(chatId: string) {
+  return (prev: PerChat): PerChat => {
+    const next = new Map(prev);
+    next.delete(chatId);
+    return next;
+  };
+}
+
 interface ChatKey {
   raw: Uint8Array;
   key: CryptoKey;
@@ -114,6 +139,7 @@ interface ChatKey {
 export interface Workspace {
   error: string | null;
   loading: boolean;
+  admin: boolean; // fundador: crea chats, aprueba y ve a todos
   profiles: Map<string, Profile>;
   avatars: Map<string, string>; // uid -> URL de la foto
   me: Profile | null;
@@ -138,16 +164,33 @@ export function useWorkspace(session: Session): Workspace {
   const ws = session.ws as CryptoKey;
   const [error, setError] = useState<string | null>(null);
 
-  // ---------- Miembros ----------
-  const [userDocs, setUserDocs] = useState<Raw[] | null>(null);
+  // ---------- Personas ----------
+  const admin = session.admin;
+  const [usersRaw, setUsersRaw] = useState<Raw[] | null>(null); // solo fundadores
+  const [ownUser, setOwnUser] = useState<DocumentData | null | undefined>(undefined);
   const [profiles, setProfiles] = useState<Map<string, Profile>>(new Map());
   const profileCache = useRef(new Map<string, { fp: string; prof: { name: string; photo: number } | null }>());
 
   useEffect(() => {
     const { db } = getFirebase();
     return onSnapshot(
+      doc(db, "users", uid),
+      (snap) => setOwnUser(snap.exists() ? snap.data({ serverTimestamps: "estimate" }) ?? {} : null),
+      (err) =>
+        setError(
+          err.code === "permission-denied"
+            ? "Sin permiso para leer tu cuenta. ¿Publicaste las reglas nuevas de Firestore con los UID?"
+            : "No se pudo conectar. Revisa tu internet."
+        )
+    );
+  }, [uid]);
+
+  useEffect(() => {
+    if (!admin) return;
+    const { db } = getFirebase();
+    return onSnapshot(
       collection(db, "users"),
-      (snap) => setUserDocs(snap.docs.map((d) => ({ id: d.id, data: d.data({ serverTimestamps: "estimate" }) }))),
+      (snap) => setUsersRaw(snap.docs.map((d) => ({ id: d.id, data: d.data({ serverTimestamps: "estimate" }) }))),
       (err) =>
         setError(
           err.code === "permission-denied"
@@ -155,97 +198,51 @@ export function useWorkspace(session: Session): Workspace {
             : "No se pudo conectar. Revisa tu internet."
         )
     );
-  }, []);
+  }, [admin]);
 
-  useEffect(() => {
-    if (!userDocs) return;
-    let cancelled = false;
-    void (async () => {
-      const map = new Map<string, Profile>();
-      for (const { id, data } of userDocs) {
-        const pub = typeof data.pub === "string" ? data.pub : "";
-        if (!pub) continue; // aún no actualiza a esta versión
-        const ck = `${id}:${pub}:${String(data.profCt ?? "")}`;
-        let c = profileCache.current.get(ck);
-        if (!c) {
-          const fp = await fingerprint(pub);
-          const prof =
-            typeof data.profIv === "string" && typeof data.profCt === "string"
-              ? await decryptProfile(ws, id, fp, { iv: data.profIv, ct: data.profCt })
-              : null;
-          c = { fp, prof };
-          profileCache.current.set(ck, c);
-        }
-        map.set(id, {
-          uid: id,
-          pub,
-          fp: c.fp,
-          code: securityCode(c.fp),
-          founder: data.founder === true,
-          name: c.prof?.name ?? "",
-          valid: !!c.prof,
-          photo: c.prof?.photo ?? 0,
-          color: colorFor(id),
-          lastRead: dateMap(data.lastRead),
-          readCount: numberMap(data.readCount),
-        });
-      }
-      if (!cancelled) setProfiles(map);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [userDocs, ws]);
 
-  const myDoc = userDocs?.find((d) => d.id === uid)?.data;
-  const myLastRead = useMemo(() => dateMap(myDoc?.lastRead), [myDoc]);
-  const myReadCount = useMemo(() => numberMap(myDoc?.readCount), [myDoc]);
+  const myLastRead = useMemo(() => dateMap(ownUser?.lastRead), [ownUser]);
+  const myReadCount = useMemo(() => numberMap(ownUser?.readCount), [ownUser]);
 
   // ---------- Fotos ----------
-  const [avatars, setAvatars] = useState<Map<string, string>>(new Map());
-  const avatarCache = useRef(new Map<string, string>()); // uid:iv -> url
+  const [avatarsRaw, setAvatarsRaw] = useState<Map<string, DocumentData> | null>(null); // solo fundadores
+  const [ownAvatar, setOwnAvatar] = useState<DocumentData | null>(null);
   useEffect(() => {
     const { db } = getFirebase();
     return onSnapshot(
-      collection(db, "avatars"),
-      (snap) => {
-        void Promise.all(
-          snap.docs.map(async (d): Promise<[string, string] | null> => {
-            const data = d.data();
-            if (typeof data.iv !== "string" || !data.data) return null;
-            const ck = `${d.id}:${data.iv}`;
-            let url = avatarCache.current.get(ck);
-            if (!url) {
-              const blob = await decryptAvatar(ws, d.id, data.iv, data.data);
-              if (!blob) return null;
-              url = URL.createObjectURL(blob);
-              avatarCache.current.set(ck, url);
-            }
-            return [d.id, url];
-          })
-        ).then((list) => setAvatars(new Map(list.filter((x): x is [string, string] => x !== null))));
-      },
+      doc(db, "avatars", uid),
+      (snap) => setOwnAvatar(snap.exists() ? snap.data() ?? null : null),
       () => undefined
     );
-  }, [ws]);
-
-  // ---------- Aprobaciones entregadas (wraps/) ----------
-  const [wrapFps, setWrapFps] = useState<Map<string, string>>(new Map());
+  }, [uid]);
   useEffect(() => {
+    if (!admin) return;
+    const { db } = getFirebase();
+    return onSnapshot(
+      collection(db, "avatars"),
+      (snap) => setAvatarsRaw(new Map(snap.docs.map((d) => [d.id, d.data()]))),
+      () => undefined
+    );
+  }, [admin]);
+
+  // ---------- Aprobaciones entregadas (wraps/, solo fundadores) ----------
+  const [wrapInfo, setWrapInfo] = useState<Map<string, { fp: string; spub: boolean }>>(new Map());
+  useEffect(() => {
+    if (!admin) return;
     const { db } = getFirebase();
     return onSnapshot(
       collection(db, "wraps"),
       (snap) => {
-        const m = new Map<string, string>();
+        const m = new Map<string, { fp: string; spub: boolean }>();
         for (const d of snap.docs) {
-          const fp = d.data().fp;
-          if (typeof fp === "string") m.set(d.id, fp);
+          const data = d.data();
+          if (typeof data.fp === "string") m.set(d.id, { fp: data.fp, spub: typeof data.spub === "string" });
         }
-        setWrapFps(m);
+        setWrapInfo(m);
       },
       () => undefined
     );
-  }, []);
+  }, [admin]);
 
   // ---------- Preferencias: fijados y silenciados ----------
   const [pinned, setPinned] = useState<string[]>([]);
@@ -304,6 +301,181 @@ export function useWorkspace(session: Session): Workspace {
     () => (chatDocs ?? []).filter((c) => Array.isArray(c.data.members)).map((c) => c.id).sort(),
     [chatDocs]
   );
+
+  // ---------- Copias por chat: perfiles, fotos y hasta dónde leyó cada quien ----------
+  const [mirrors, setMirrors] = useState<PerChat>(new Map());
+  const [mirrorPics, setMirrorPics] = useState<PerChat>(new Map());
+  const [reads, setReads] = useState<PerChat>(new Map());
+  useKeyedListeners(
+    newChatIds,
+    (chatId) =>
+      onSnapshot(
+        collection(getFirebase().db, "chats", chatId, "people"),
+        (snap) => setMirrors(setPerChat(chatId, snap.docs)),
+        () => undefined
+      ),
+    (chatId) => setMirrors(dropPerChat(chatId))
+  );
+  useKeyedListeners(
+    newChatIds,
+    (chatId) =>
+      onSnapshot(
+        collection(getFirebase().db, "chats", chatId, "avatars"),
+        (snap) => setMirrorPics(setPerChat(chatId, snap.docs)),
+        () => undefined
+      ),
+    (chatId) => setMirrorPics(dropPerChat(chatId))
+  );
+  useKeyedListeners(
+    newChatIds,
+    (chatId) =>
+      onSnapshot(
+        collection(getFirebase().db, "chats", chatId, "reads"),
+        (snap) => setReads(setPerChat(chatId, snap.docs.map((d) => ({ id: d.id, data: () => d.data({ serverTimestamps: "estimate" }) })))),
+        () => undefined
+      ),
+    (chatId) => setReads(dropPerChat(chatId))
+  );
+
+  // Fundador: el directorio completo. Miembro: él mismo + las copias de sus chats.
+  const userDocs = useMemo((): Raw[] | null => {
+    if (admin) return usersRaw;
+    if (ownUser === undefined) return null;
+    const merged = new Map<string, DocumentData>();
+    merged.set(uid, ownUser ?? {});
+    for (const people of mirrors.values()) {
+      for (const [m, d] of people) {
+        if (merged.has(m)) continue;
+        merged.set(m, { pub: d.pub, profIv: d.profIv, profCt: d.profCt, lastRead: {}, readCount: {} });
+      }
+    }
+    for (const [chatId, rs] of reads) {
+      for (const [m, r] of rs) {
+        const d = merged.get(m);
+        if (!d || m === uid) continue;
+        if (r.at) (d.lastRead as Record<string, unknown>)[chatId] = r.at;
+        if (typeof r.n === "number") (d.readCount as Record<string, unknown>)[chatId] = r.n;
+      }
+    }
+    return [...merged].map(([id, data]) => ({ id, data }));
+  }, [admin, usersRaw, ownUser, mirrors, reads, uid]);
+
+  const avatarDocs = useMemo((): Map<string, DocumentData> => {
+    if (admin && avatarsRaw) return avatarsRaw;
+    const m = new Map<string, DocumentData>();
+    for (const pics of mirrorPics.values()) for (const [id, d] of pics) if (!m.has(id)) m.set(id, d);
+    if (ownAvatar) m.set(uid, ownAvatar);
+    return m;
+  }, [admin, avatarsRaw, mirrorPics, ownAvatar, uid]);
+
+  const [avatars, setAvatars] = useState<Map<string, string>>(new Map());
+  const avatarCache = useRef(new Map<string, string>()); // uid:iv -> url
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all(
+      [...avatarDocs].map(async ([id, data]): Promise<[string, string] | null> => {
+        if (typeof data.iv !== "string" || !data.data) return null;
+        const ck = `${id}:${data.iv}`;
+        let url = avatarCache.current.get(ck);
+        if (!url) {
+          const blob = await decryptAvatar(ws, id, data.iv, data.data);
+          if (!blob) return null;
+          url = URL.createObjectURL(blob);
+          avatarCache.current.set(ck, url);
+        }
+        return [id, url];
+      })
+    ).then((list) => {
+      if (!cancelled) setAvatars(new Map(list.filter((x): x is [string, string] => x !== null)));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [avatarDocs, ws]);
+
+  useEffect(() => {
+    if (!userDocs) return;
+    let cancelled = false;
+    void (async () => {
+      const map = new Map<string, Profile>();
+      for (const { id, data } of userDocs) {
+        const pub = typeof data.pub === "string" ? data.pub : "";
+        if (!pub) continue; // aún no actualiza a esta versión
+        const ck = `${id}:${pub}:${String(data.profCt ?? "")}`;
+        let c = profileCache.current.get(ck);
+        if (!c) {
+          const fp = await fingerprint(pub);
+          const prof =
+            typeof data.profIv === "string" && typeof data.profCt === "string"
+              ? await decryptProfile(ws, id, fp, { iv: data.profIv, ct: data.profCt })
+              : null;
+          c = { fp, prof };
+          profileCache.current.set(ck, c);
+        }
+        map.set(id, {
+          uid: id,
+          pub,
+          fp: c.fp,
+          code: securityCode(c.fp),
+          founder: data.founder === true,
+          name: c.prof?.name ?? "",
+          valid: !!c.prof,
+          photo: c.prof?.photo ?? 0,
+          color: colorFor(id),
+          lastRead: dateMap(data.lastRead),
+          readCount: numberMap(data.readCount),
+        });
+      }
+      if (!cancelled) setProfiles(map);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userDocs, ws]);
+
+  // Mantener las copias al día: cada quien la suya; un fundador, la de todos
+  // los miembros de sus chats (así un miembro ve a los demás de ese chat).
+  const mirrorAttempts = useRef(new Set<string>());
+  useEffect(() => {
+    if (!chatDocs) return;
+    const { db } = getFirebase();
+    const usersById = new Map((usersRaw ?? []).map((u) => [u.id, u.data]));
+    for (const c of chatDocs) {
+      if (!Array.isArray(c.data.members) || !c.data.members.includes(uid)) continue;
+      const people = mirrors.get(c.id);
+      const pics = mirrorPics.get(c.id);
+      if (!people || !pics) continue; // aún no cargan
+      const targets = admin ? (c.data.members as unknown[]).filter((x): x is string => typeof x === "string") : [uid];
+      for (const m of targets) {
+        const src = m === uid ? ownUser : usersById.get(m);
+        if (src && typeof src.pub === "string" && typeof src.profIv === "string" && typeof src.profCt === "string") {
+          const cur = people.get(m);
+          if (!cur || cur.pub !== src.pub || cur.profIv !== src.profIv || cur.profCt !== src.profCt) {
+            const att = `p:${c.id}:${m}:${src.profIv}:${src.pub.slice(-16)}`;
+            if (!mirrorAttempts.current.has(att)) {
+              mirrorAttempts.current.add(att);
+              void setDoc(doc(db, "chats", c.id, "people", m), { pub: src.pub, profIv: src.profIv, profCt: src.profCt }).catch(
+                () => mirrorAttempts.current.delete(att)
+              );
+            }
+          }
+        }
+        const pic = m === uid ? ownAvatar : avatarsRaw?.get(m);
+        if (pic && typeof pic.iv === "string" && pic.data) {
+          const cur = pics.get(m);
+          if (!cur || cur.iv !== pic.iv) {
+            const att = `a:${c.id}:${m}:${pic.iv}`;
+            if (!mirrorAttempts.current.has(att)) {
+              mirrorAttempts.current.add(att);
+              void setDoc(doc(db, "chats", c.id, "avatars", m), { iv: pic.iv, data: pic.data }).catch(() =>
+                mirrorAttempts.current.delete(att)
+              );
+            }
+          }
+        }
+      }
+    }
+  }, [chatDocs, mirrors, mirrorPics, ownUser, ownAvatar, usersRaw, avatarsRaw, admin, uid]);
 
   // ---------- Llaves de las conversaciones ----------
   const [keyDocs, setKeyDocs] = useState<Map<string, Map<string, KeyDoc>>>(new Map());
@@ -583,19 +755,29 @@ export function useWorkspace(session: Session): Workspace {
   const lastMarked = useRef(new Map<string, string>());
   const markRead = useCallback(
     (chat: ChatInfo) => {
-      const marker = `${chat.count}:${chat.lastMessageAt?.getTime() ?? 0}`;
       const read = myLastRead[chat.id];
       const upToDate =
         (myReadCount[chat.id] ?? 0) === chat.count && !!read && (!chat.lastMessageAt || read >= chat.lastMessageAt);
-      if (upToDate || lastMarked.current.get(chat.id) === marker) return;
+      // En los chats nuevos, los demás miembros ven tu "leído" en chats/{id}/reads.
+      const mine = reads.get(chat.id)?.get(uid);
+      const sharedOk = chat.legacy || !reads.has(chat.id) || (mine?.n === chat.count && !!mine?.at);
+      const marker = `${chat.count}:${chat.lastMessageAt?.getTime() ?? 0}:${upToDate ? 1 : 0}${sharedOk ? 1 : 0}`;
+      if ((upToDate && sharedOk) || lastMarked.current.get(chat.id) === marker) return;
       lastMarked.current.set(chat.id, marker);
-      void setDoc(
-        doc(getFirebase().db, "users", uid),
-        { lastRead: { [chat.id]: serverTimestamp() }, readCount: { [chat.id]: chat.count } },
-        { merge: true }
-      ).catch(() => lastMarked.current.delete(chat.id));
+      const { db } = getFirebase();
+      const fail = () => lastMarked.current.delete(chat.id);
+      if (!upToDate) {
+        void setDoc(
+          doc(db, "users", uid),
+          { lastRead: { [chat.id]: serverTimestamp() }, readCount: { [chat.id]: chat.count } },
+          { merge: true }
+        ).catch(fail);
+      }
+      if (!chat.legacy && (!upToDate || !sharedOk)) {
+        void setDoc(doc(db, "chats", chat.id, "reads", uid), { n: chat.count, at: serverTimestamp() }).catch(fail);
+      }
     },
-    [uid, myLastRead, myReadCount]
+    [uid, myLastRead, myReadCount, reads]
   );
 
   const togglePin = useCallback(
@@ -620,16 +802,24 @@ export function useWorkspace(session: Session): Workspace {
 
   const chatRaw = useCallback((chatId: string) => chatKeys.current.get(chatId)?.raw ?? null, []);
 
-  const pending = useMemo(
-    () => [...profiles.values()].filter((p) => !p.valid && p.uid !== uid && wrapFps.get(p.uid) !== p.fp),
-    [profiles, wrapFps, uid]
-  );
+  // Cuentas que esperan aprobación (solo las ve un fundador). Una aprobación
+  // antigua, sin la llave de quien aprobó, se vuelve a pedir: un miembro ya
+  // no puede buscar esa llave en users/.
+  const pending = useMemo(() => {
+    if (!admin) return [];
+    return [...profiles.values()].filter((p) => {
+      if (p.valid || p.uid === uid) return false;
+      const w = wrapInfo.get(p.uid);
+      return !w || w.fp !== p.fp || !w.spub;
+    });
+  }, [profiles, wrapInfo, uid, admin]);
 
   const mutedSet = useMemo(() => new Set(muted), [muted]);
 
   return {
     error,
     loading: !chatDocs || !userDocs,
+    admin,
     profiles,
     avatars,
     me: profiles.get(uid) ?? null,

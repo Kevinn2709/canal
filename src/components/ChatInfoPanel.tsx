@@ -40,6 +40,7 @@ export function ChatInfoPanel({
   const uid = session.uid;
   const muted = ws.muted.has(chat.id);
   const pinned = ws.pinned.includes(chat.id);
+  const admin = ws.admin; // solo un fundador cambia nombre, archiva o cambia miembros
   const candidates = [...ws.profiles.values()].filter((p) => p.valid && !chat.members.includes(p.uid));
 
   const run = async (fn: () => Promise<void>) => {
@@ -111,10 +112,11 @@ export function ChatInfoPanel({
         <div className="divide-y divide-neutral-900 border-y border-neutral-900">
           {row(muted ? "Quitar silencio" : "Silenciar notificaciones", () => ws.toggleMute(chat.id))}
           {row(pinned ? "Desfijar de la lista" : "Fijar arriba en la lista", () => ws.togglePin(chat.id))}
-          {chat.key && row("Cambiar nombre o proyecto", onEdit)}
-          {row(chat.archived ? "Desarchivar" : "Archivar", () =>
-            void run(() => setChatArchived(getFirebase().db, chat.id, !chat.archived))
-          )}
+          {admin && chat.key && row("Cambiar nombre o proyecto", onEdit)}
+          {admin &&
+            row(chat.archived ? "Desarchivar" : "Archivar", () =>
+              void run(() => setChatArchived(getFirebase().db, chat.id, !chat.archived))
+            )}
         </div>
 
         <div className="px-4 pb-2 pt-5">
@@ -132,7 +134,7 @@ export function ChatInfoPanel({
                   <p className="truncate text-sm text-neutral-200">{m === uid ? `${ws.nameOf(m)} (tú)` : ws.nameOf(m)}</p>
                   {p && <p className="font-mono text-[10px] text-neutral-600">{p.code}</p>}
                 </div>
-                {!chat.legacy && m !== uid && chat.members.length > 2 && (
+                {admin && !chat.legacy && m !== uid && chat.members.length > 2 && (
                   confirmRemove === m ? (
                     <button type="button" onClick={() => void remove(m)} disabled={busy} className="text-xs text-red-400 underline">
                       Confirmar
@@ -148,7 +150,7 @@ export function ChatInfoPanel({
           })}
         </ul>
 
-        {!chat.legacy && chat.key && (
+        {admin && !chat.legacy && chat.key && (
           <div className="px-4 pt-3">
             {!adding ? (
               <button

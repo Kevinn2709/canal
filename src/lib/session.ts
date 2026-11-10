@@ -12,7 +12,14 @@
  * - meta/space: la llave del espacio cifrada con la llave anterior. Así los
  *   dos fundadores la obtienen solos, sin esperar a que alguien los apruebe.
  * - wraps/{uid}: la llave del espacio (y, para un fundador, la anterior) que un
- *   miembro le pasa cifrada a otro al aprobarlo.
+ *   fundador le pasa cifrada a otro al aprobarlo.
+ *
+ * Papeles (los decide firestore.rules):
+ * - Fundadores originales (founders): los dos de siempre. Crean chats, aprueban
+ *   y ven a todos; además tienen las conversaciones de antes.
+ * - Fundadores adicionales (admins): igual, pero sin las conversaciones de antes.
+ * - Miembros (others): solo usan los chats a los que los agregan. No crean
+ *   chats ni ven quién más está en la web.
  */
 
 import { doc, getDoc, serverTimestamp, setDoc, type Firestore } from "firebase/firestore";
@@ -44,9 +51,16 @@ export interface Bundle {
   legacy?: string; // llave anterior (32 bytes, base64), solo fundadores
 }
 
+/** Lo que las reglas le permiten a esta cuenta. */
+export interface Role {
+  founder: boolean; // fundador original: tiene las conversaciones de antes
+  admin: boolean; // crea chats, aprueba y ve a todos (fundadores originales y adicionales)
+}
+
 export interface Session {
   uid: string;
-  founder: boolean; // está en la lista de fundadores de las reglas
+  founder: boolean; // fundador original (conversaciones de antes)
+  admin: boolean; // fundador (original o adicional): crea chats y ve a todos
   identity: Identity;
   personalKey: CryptoKey;
   salt: string;
@@ -146,6 +160,29 @@ export async function probeLegacy(db: Firestore): Promise<{ founder: boolean; me
   }
 }
 
+/**
+ * ¿Qué papel tiene esta cuenta? Fundador original = puede leer meta/crypto;
+ * fundador (original o adicional) = puede leer meta/admin. El documento no
+ * necesita existir: basta con que las reglas dejen leerlo.
+ */
+export async function probeRole(db: Firestore): Promise<Role & { meta: LegacyMeta | null }> {
+  const legacy = await probeLegacy(db);
+  let admin = legacy.founder;
+  if (!admin) {
+    try {
+      await getDoc(doc(db, "meta", "admin"));
+      admin = true;
+    } catch (err) {
+      if (errorCode(err) !== "permission-denied") throw err;
+    }
+  }
+  return { founder: legacy.founder, admin, meta: legacy.meta };
+}
+
+export function roleOf(session: Session): Role {
+  return { founder: session.founder, admin: session.admin };
+}
+
 /** Comprueba la frase compartida anterior. Devuelve la llave en bruto o null. */
 export async function legacyRawFromPhrase(meta: LegacyMeta, phrase: string): Promise<Uint8Array | null> {
   const raw = await deriveRawKey(phrase, meta.salt, meta.iterations);
@@ -173,7 +210,7 @@ export async function openBundle(personalKey: CryptoKey, uid: string, kd: KeysDo
 
 export async function buildSession(
   uid: string,
-  founder: boolean,
+  role: Role,
   personalKey: CryptoKey,
   kd: { salt: string; iterations: number },
   bundle: Bundle
@@ -183,7 +220,8 @@ export async function buildSession(
   const legacyRaw = bundle.legacy ? base64ToBytes(bundle.legacy) : null;
   return {
     uid,
-    founder,
+    founder: role.founder,
+    admin: role.admin || role.founder,
     identity,
     personalKey,
     salt: kd.salt,
@@ -272,9 +310,10 @@ async function spaceKeyForFreshInstall(db: Firestore, uid: string): Promise<Uint
  */
 export async function createAccount(
   db: Firestore,
-  args: { uid: string; founder: boolean; phrase: string; legacyRaw: Uint8Array | null; freshInstall: boolean }
+  args: { uid: string; role: Role; phrase: string; legacyRaw: Uint8Array | null; freshInstall: boolean }
 ): Promise<Session> {
-  const { uid, founder, phrase, legacyRaw } = args;
+  const { uid, role, phrase, legacyRaw } = args;
+  const founder = role.founder;
   const kd = { salt: randomSalt(), iterations: DEFAULT_ITERATIONS };
   const personalKey = await deriveKey(phrase, kd.salt, kd.iterations);
   const { identity, privPkcs8 } = await generateIdentity();
@@ -288,7 +327,7 @@ export async function createAccount(
   if (legacyRaw) bundle.legacy = bytesToBase64(legacyRaw);
 
   await writeBundle(db, uid, personalKey, kd, bundle);
-  const session = await buildSession(uid, founder, personalKey, kd, bundle);
+  const session = await buildSession(uid, role, personalKey, kd, bundle);
   await publishIdentity(db, session);
   return session;
 }
@@ -307,7 +346,7 @@ export async function addLegacyKey(db: Firestore, session: Session, legacyRaw: U
   if (!wsRaw) wsRaw = await spaceKeyFromLegacy(db, session.uid, legacyRaw);
   const bundle: Bundle = { ...session.bundle, legacy: bytesToBase64(legacyRaw), ws: bytesToBase64(wsRaw) };
   await writeBundle(db, session.uid, session.personalKey, session, bundle);
-  return buildSession(session.uid, session.founder, session.personalKey, session, bundle);
+  return buildSession(session.uid, roleOf(session), session.personalKey, session, bundle);
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +355,7 @@ export async function addLegacyKey(db: Firestore, session: Session, legacyRaw: U
 
 export interface WrapDoc {
   from: string;
+  spub?: string; // llave pública de quien aprueba (las reglas comprueban que es la suya)
   fp: string; // huella de la llave del destinatario para la que se cifró
   iv: string;
   ct: string;
@@ -341,6 +381,8 @@ export async function approveMember(
   );
   await setDoc(doc(db, "wraps", target.uid), {
     from: session.uid,
+    // Va aquí porque un miembro no puede leer users/ de nadie más que de sí mismo.
+    spub: session.identity.pub,
     fp: target.fp,
     iv: sealed.iv,
     ct: sealed.ct,
@@ -364,5 +406,5 @@ export async function acceptWrap(
     bundle.legacy = body.legacy;
   }
   await writeBundle(db, session.uid, session.personalKey, session, bundle);
-  return buildSession(session.uid, session.founder, session.personalKey, session, bundle);
+  return buildSession(session.uid, roleOf(session), session.personalKey, session, bundle);
 }

@@ -199,9 +199,10 @@ function RowMenu({ chat, ws, onClose }: { chat: ChatInfo; ws: Workspace; onClose
           {item(pinned ? "Desfijar" : "Fijar arriba", () => ws.togglePin(chat.id))}
           {item(muted ? "Quitar silencio" : "Silenciar", () => ws.toggleMute(chat.id))}
           {ws.unreadOf(chat) > 0 && item("Marcar como leído", () => ws.markRead(chat))}
-          {item(chat.archived ? "Desarchivar" : "Archivar", () => {
-            void setChatArchived(getFirebase().db, chat.id, !chat.archived).catch(() => undefined);
-          })}
+          {ws.admin &&
+            item(chat.archived ? "Desarchivar" : "Archivar", () => {
+              void setChatArchived(getFirebase().db, chat.id, !chat.archived).catch(() => undefined);
+            })}
         </div>
         <button type="button" onClick={onClose} className="mt-2 w-full rounded-xl py-2.5 text-sm text-neutral-400 hover:bg-neutral-800">
           Cancelar
@@ -292,13 +293,15 @@ export function Sidebar({
           <PersonAvatar ws={ws} uid={myUid} size={34} />
         </button>
         <h1 className="flex-1 pl-1 text-xl font-semibold tracking-tight">Chats</h1>
-        <button
-          onClick={onCreate}
-          className="rounded-full p-2 text-neutral-300 transition-colors hover:bg-neutral-900"
-          aria-label="Nuevo chat"
-        >
-          <PlusIcon />
-        </button>
+        {ws.admin && (
+          <button
+            onClick={onCreate}
+            className="rounded-full p-2 text-neutral-300 transition-colors hover:bg-neutral-900"
+            aria-label="Nuevo chat"
+          >
+            <PlusIcon />
+          </button>
+        )}
         <button
           onClick={onOpenSettings}
           className={`relative rounded-full p-2 transition-colors hover:bg-neutral-900 ${settingsSelected ? "text-neutral-100" : "text-neutral-300"}`}
@@ -361,7 +364,9 @@ export function Sidebar({
             {filter.kind === "unread"
               ? "No tienes mensajes sin leer."
               : filter.kind === "all"
-                ? "Aún no hay chats. Crea uno con el botón +."
+                ? ws.admin
+                  ? "Aún no hay chats. Crea uno con el botón +."
+                  : "Aún no estás en ningún chat. Un fundador te agregará."
                 : "No hay chats aquí."}
           </p>
         )}

@@ -666,24 +666,28 @@ function ChatRoom({
                   >
                     {muted ? "Quitar silencio" : "Silenciar"}
                   </button>
-                  <button
-                    onClick={() => {
-                      setMenuOpen(false);
-                      onEdit();
-                    }}
-                    className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
-                  >
-                    Cambiar nombre o proyecto
-                  </button>
-                  <button
-                    onClick={() => {
-                      setMenuOpen(false);
-                      void setChatArchived(getFirebase().db, chat.id, !chat.archived).catch(() => undefined);
-                    }}
-                    className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
-                  >
-                    {chat.archived ? "Desarchivar" : "Archivar"}
-                  </button>
+                  {ws.admin && (
+                    <>
+                      <button
+                        onClick={() => {
+                          setMenuOpen(false);
+                          onEdit();
+                        }}
+                        className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
+                      >
+                        Cambiar nombre o proyecto
+                      </button>
+                      <button
+                        onClick={() => {
+                          setMenuOpen(false);
+                          void setChatArchived(getFirebase().db, chat.id, !chat.archived).catch(() => undefined);
+                        }}
+                        className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
+                      >
+                        {chat.archived ? "Desarchivar" : "Archivar"}
+                      </button>
+                    </>
+                  )}
                 </div>
               </>
             )}

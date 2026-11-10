@@ -6,7 +6,8 @@
  * - Perfil: nombre, foto y tu código de seguridad.
  * - Notificaciones de este dispositivo: avisos dentro de la web, sonido,
  *   avisos del sistema con la web abierta y push con la web cerrada.
- * - Miembros: aprobar cuentas nuevas (comparando su código) y ver a todos.
+ * - Miembros (solo fundadores): aprobar cuentas nuevas (comparando su código)
+ *   y ver a todos.
  * - Seguridad: recordar en este dispositivo, cambiar tu frase, recuperar las
  *   conversaciones de antes y cerrar sesión.
  */
@@ -363,10 +364,14 @@ function Members({ session, ws }: { session: Session; ws: Workspace }) {
         <summary className="cursor-pointer text-neutral-400">Cómo sumar a alguien</summary>
         <ol className="mt-2 list-decimal space-y-1 pl-4">
           <li>Firebase → Authentication → Users → Agregar usuario (su correo).</li>
-          <li>Copia su UID y agrégalo en firestore.rules (lista de miembros) → Publicar.</li>
+          <li>
+            Copia su UID y agrégalo en firestore.rules: en others() si será miembro, en admins() si será fundador →
+            Publicar.
+          </li>
           <li>Esa persona entra a la web y crea su frase personal.</li>
           <li>Aquí aparece «Esperando aprobación»: compara su código y apruébala.</li>
           <li>Después agrégala a los chats que quieras desde «Información del chat».</li>
+          <li>Un miembro solo ve a quienes están en sus chats y no puede crear chats.</li>
         </ol>
       </details>
     </>
@@ -604,9 +609,11 @@ export function Settings({
             </p>
           </Section>
 
-          <Section title="Miembros">
-            <Members session={session} ws={ws} />
-          </Section>
+          {ws.admin && (
+            <Section title="Miembros">
+              <Members session={session} ws={ws} />
+            </Section>
+          )}
 
           <Section title="Seguridad">
             <Security session={session} onSession={onSession} />

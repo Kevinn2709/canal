@@ -24,9 +24,10 @@ import {
   loadKeysDoc,
   openBundle,
   personalKeyFor,
-  probeLegacy,
+  probeRole,
   type KeysDoc,
   type LegacyMeta,
+  type Role,
   type Session,
 } from "@/lib/session";
 import { clearKeys, forgetKeys, keyId, loadKey, saveKey } from "@/lib/keystore";
@@ -46,7 +47,8 @@ export async function rememberOnDevice(session: Session, remember: boolean): Pro
 
 export function Unlock({ user, onReady }: { user: User; onReady: (s: Session) => void }) {
   const [mode, setMode] = useState<Mode>("loading");
-  const [founder, setFounder] = useState(false);
+  const [role, setRole] = useState<Role>({ founder: false, admin: false });
+  const founder = role.founder;
   const [legacyMeta, setLegacyMeta] = useState<LegacyMeta | null>(null);
   const [kd, setKd] = useState<KeysDoc | null>(null);
   const [phrase, setPhrase] = useState("");
@@ -65,8 +67,9 @@ export function Unlock({ user, onReady }: { user: User; onReady: (s: Session) =>
     const { db } = getFirebase();
     try {
       const keys = await loadKeysDoc(db, user.uid);
-      const legacy = await probeLegacy(db);
-      setFounder(legacy.founder);
+      const legacy = await probeRole(db);
+      const r: Role = { founder: legacy.founder, admin: legacy.admin };
+      setRole(r);
       setLegacyMeta(legacy.meta);
       setKd(keys);
       if (!keys) {
@@ -77,7 +80,7 @@ export function Unlock({ user, onReady }: { user: User; onReady: (s: Session) =>
       if (saved) {
         const bundle = await openBundle(saved, user.uid, keys);
         if (bundle) {
-          onReady(await buildSession(user.uid, legacy.founder, saved, keys, bundle));
+          onReady(await buildSession(user.uid, r, saved, keys, bundle));
           return;
         }
       }
@@ -104,7 +107,7 @@ export function Unlock({ user, onReady }: { user: User; onReady: (s: Session) =>
         setBusy(false);
         return;
       }
-      const session = await buildSession(user.uid, founder, key, kd, bundle);
+      const session = await buildSession(user.uid, role, key, kd, bundle);
       await rememberOnDevice(session, remember);
       onReady(session);
     } catch {
@@ -141,7 +144,7 @@ export function Unlock({ user, onReady }: { user: User; onReady: (s: Session) =>
       }
       const session = await createAccount(db, {
         uid: user.uid,
-        founder,
+        role,
         phrase,
         legacyRaw,
         freshInstall: founder && !legacyMeta,
@@ -249,7 +252,7 @@ export function Unlock({ user, onReady }: { user: User; onReady: (s: Session) =>
               Tu frase anterior no se puede recuperar (nadie la conoce, ni siquiera Firebase). Si creas una nueva:
             </p>
             <ul className="list-disc space-y-1 pl-5 text-sm text-neutral-400">
-              <li>Otro miembro tendrá que volver a aprobarte desde Configuración → Miembros.</li>
+              <li>Un fundador tendrá que volver a aprobarte desde Configuración → Miembros.</li>
               <li>En cuanto alguien de cada chat abra la web, recuperarás ese chat con todo su historial.</li>
               {founder && legacyMeta && (
                 <li>Con la frase compartida de antes recuperas al momento las conversaciones de antes.</li>
@@ -311,7 +314,7 @@ export function Unlock({ user, onReady }: { user: User; onReady: (s: Session) =>
             <input {...phraseProps} value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="repite la frase personal" />
             <Options show={show} setShow={setShow} remember={remember} setRemember={setRemember} />
             <p className="text-xs text-amber-400/80">
-              Si la olvidas, otro miembro tendrá que volver a darte acceso.
+              Si la olvidas, un fundador tendrá que volver a darte acceso.
             </p>
             {error && <p className="text-sm text-red-400">{error}</p>}
             <button type="submit" disabled={busy || !phrase || !confirm} className={buttonClass}>

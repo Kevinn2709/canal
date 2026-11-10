@@ -2,14 +2,20 @@ rules_version = '2';
 
 // Reglas de seguridad de Firestore para el chat cifrado.
 //
-// 1) En founders() pon los UID de las dos cuentas originales (tú y tu socio).
-//    Son los únicos que pueden leer las conversaciones de antes.
-// 2) En others() pon los UID de los demás miembros (hasta los que quieras).
-//    Mientras no existan, deja los textos de ejemplo: no estorban.
-//    (Firebase -> Authentication -> Users -> columna "User UID".)
-// 3) Pega este archivo completo en Firebase -> Firestore Database -> Rules
-//    y pulsa "Publish". Cada vez que sumes a alguien, agrega su UID y vuelve
-//    a publicar.
+// Tres listas de UID (Firebase -> Authentication -> Users -> "User UID"):
+//
+// 1) founders(): las dos cuentas originales (tú y tu socio). Crean chats,
+//    aprueban cuentas nuevas, ven a todos los miembros y son los únicos que
+//    leen las conversaciones de antes.
+// 2) admins(): fundadores adicionales. Igual que los de arriba (crean chats,
+//    aprueban, ven a todos), pero SIN las conversaciones de antes.
+// 3) others(): miembros. Solo usan los chats a los que un fundador los
+//    agrega: no crean chats ni ven quién más está en la web.
+//
+// Mientras una lista no tenga a nadie, deja los textos de ejemplo: no
+// estorban. Pega este archivo completo en Firebase -> Firestore Database ->
+// Rules y pulsa "Publish". Cada vez que sumes a alguien o le cambies de
+// lista, edita aquí y vuelve a publicar.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -18,24 +24,40 @@ service cloud.firestore {
       return ['53RqgaavXfZDCd0Ln00OMwGlGnF2', 'cqjDflCzPyb1gYwU7EklOpYVSk02'];
     }
 
+    function admins() {
+      return ['IVXTIt6DWgcWLa97ufOOjCmSWQ22'];
+    }
+
     function others() {
-      return ['daNRBtWOCIYP3XTSpoHca8yKaYL2', 'IVXTIt6DWgcWLa97ufOOjCmSWQ22', 'sXOPC7jKI8SlSM2pNn72c5vq9903'];
+      return ['daNRBtWOCIYP3XTSpoHca8yKaYL2', 'sXOPC7jKI8SlSM2pNn72c5vq9903'];
     }
 
     function signedIn() {
       return request.auth != null;
     }
 
+    // Fundador original: conversaciones de antes.
     function isFounder() {
       return signedIn() && request.auth.uid in founders();
     }
 
+    // Fundador (original o adicional): crea chats, aprueba y ve a todos.
+    function isAdmin() {
+      return signedIn() && (request.auth.uid in founders() || request.auth.uid in admins());
+    }
+
     function isMember() {
-      return signedIn() && (request.auth.uid in founders() || request.auth.uid in others());
+      return signedIn()
+        && (request.auth.uid in founders() || request.auth.uid in admins() || request.auth.uid in others());
     }
 
     function allMembers() {
-      return founders().concat(others());
+      return founders().concat(admins()).concat(others());
+    }
+
+    // Un fundador puede leer lo de cualquiera; un miembro, solo lo suyo.
+    function selfOrAdmin(userId) {
+      return isMember() && (request.auth.uid == userId || isAdmin());
     }
 
     // ¿Puede usar esta conversación? Las nuevas tienen lista de miembros;
@@ -122,8 +144,12 @@ service cloud.firestore {
 
     // Lo público de cada quien: llave pública, perfil cifrado, si es
     // fundador y hasta dónde leyó cada chat. Cada quien solo escribe el suyo.
+    // Solo un fundador ve la lista completa; un miembro conoce a los demás
+    // por la copia que guarda cada chat (chats/{id}/people), así que solo ve
+    // a quienes comparten un chat con él.
     match /users/{userId} {
-      allow read: if isMember();
+      allow get: if selfOrAdmin(userId);
+      allow list: if isAdmin();
       allow create, update: if isMember()
         && request.auth.uid == userId
         && request.resource.data.keys().hasOnly(
@@ -142,9 +168,10 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Foto de perfil, cifrada.
+    // Foto de perfil, cifrada. Misma regla de lectura que users/.
     match /avatars/{userId} {
-      allow read: if isMember();
+      allow get: if selfOrAdmin(userId);
+      allow list: if isAdmin();
       allow create, update: if isMember()
         && request.auth.uid == userId
         && request.resource.data.keys().hasOnly(['iv', 'data', 'updatedAt'])
@@ -156,15 +183,20 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Aprobación: la llave del espacio que un miembro le pasa (cifrada solo
-    // para él) a otro. Nadie se la puede dar a sí mismo.
+    // Aprobación: la llave del espacio que un fundador le pasa (cifrada solo
+    // para él) a otro. Nadie se la puede dar a sí mismo. Lleva la llave
+    // pública de quien aprueba (spub), comprobada aquí contra su users/,
+    // porque quien recibe no puede leer users/ de otros.
     match /wraps/{userId} {
-      allow read: if isMember();
-      allow create, update: if isMember()
+      allow get: if selfOrAdmin(userId);
+      allow list: if isAdmin();
+      allow create, update: if isAdmin()
         && request.auth.uid != userId
         && userId in allMembers()
-        && request.resource.data.keys().hasOnly(['from', 'fp', 'iv', 'ct', 'at'])
+        && request.resource.data.keys().hasOnly(['from', 'spub', 'fp', 'iv', 'ct', 'at'])
         && request.resource.data.from == request.auth.uid
+        && request.resource.data.spub
+             == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.pub
         && request.resource.data.fp is string
         && request.resource.data.fp.size() == 64
         && request.resource.data.iv is string
@@ -175,10 +207,12 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Suscripciones push de cada quien y chats silenciados. Los demás
-    // miembros las leen (para avisarle); solo el dueño las cambia.
+    // Suscripciones push de cada quien y chats silenciados. La función de
+    // avisos las lee una por una con el permiso de quien envía; nadie puede
+    // listarlas. Solo el dueño las cambia.
     match /push/{userId} {
-      allow read: if isMember();
+      allow get: if isMember();
+      allow list: if false;
       allow create, update: if isMember()
         && request.auth.uid == userId
         && request.resource.data.keys().hasOnly(['subs', 'muted'])
@@ -213,6 +247,13 @@ service cloud.firestore {
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.createdAt == request.time;
       allow update, delete: if false;
+    }
+
+    // Solo para saber si esta cuenta es fundador (original o adicional): la
+    // web intenta leerlo. No hace falta que exista.
+    match /meta/admin {
+      allow get: if isAdmin();
+      allow list, write: if false;
     }
 
     // Datos de la frase compartida de la versión anterior (solo fundadores).
@@ -253,7 +294,8 @@ service cloud.firestore {
 
       allow read: if isFounder() || (isMember() && request.auth.uid in resource.data.members);
 
-      allow create: if isMember()
+      // Solo un fundador crea chats.
+      allow create: if isAdmin()
         && request.resource.data.keys().hasOnly(
              ['members', 'metaIv', 'metaCt', 'createdBy', 'createdAt', 'lastMessageAt',
               'lastMessageBy', 'archived', 'count'])
@@ -274,7 +316,8 @@ service cloud.firestore {
         && request.resource.data.count == 0;
 
       allow update: if isMember() && inChat() && (
-        // Mensaje nuevo: hora, autor, vista previa cifrada y contador +1.
+        // Mensaje nuevo (cualquier miembro): hora, autor, vista previa cifrada
+        // y contador +1.
         (changed().hasOnly(['lastMessageAt', 'lastMessageBy', 'lastIv', 'lastCt', 'count'])
           && request.resource.data.lastMessageAt == request.time
           && request.resource.data.lastMessageBy == request.auth.uid
@@ -284,16 +327,25 @@ service cloud.firestore {
                 && request.resource.data.lastCt.size() <= 2000))
           && (!changed().hasAny(['count'])
               || request.resource.data.count == resource.data.get('count', 0) + 1))
+        // Salir del chat (cualquier miembro, solo a sí mismo).
+        || (changed().hasOnly(['members'])
+          && ('members' in resource.data)
+          && request.resource.data.members is list
+          && request.resource.data.members.size() >= 1
+          && request.resource.data.members.size() == resource.data.members.size() - 1
+          && request.resource.data.members.toSet()
+               == resource.data.members.toSet().difference([request.auth.uid].toSet()))
+        // De aquí en adelante, solo un fundador.
         // Renombrar o cambiar de proyecto.
-        || (changed().hasOnly(['metaIv', 'metaCt'])
+        || (isAdmin() && changed().hasOnly(['metaIv', 'metaCt'])
           && request.resource.data.metaIv is string
           && request.resource.data.metaIv.size() == 16
           && request.resource.data.metaCt is string
           && request.resource.data.metaCt.size() <= 2000)
         // Archivar o desarchivar.
-        || (changed().hasOnly(['archived']) && request.resource.data.archived is bool)
+        || (isAdmin() && changed().hasOnly(['archived']) && request.resource.data.archived is bool)
         // Agregar o quitar miembros (solo en las conversaciones nuevas).
-        || (changed().hasOnly(['members'])
+        || (isAdmin() && changed().hasOnly(['members'])
           && ('members' in resource.data)
           && request.resource.data.members is list
           && request.resource.data.members.size() >= 1
@@ -355,6 +407,50 @@ service cloud.firestore {
           && request.auth.uid == userId
           && request.resource.data.keys().hasOnly(['at'])
           && (request.resource.data.at == null || request.resource.data.at == request.time);
+        allow delete: if false;
+      }
+
+      // Copia del perfil (llave pública + perfil cifrado) de cada miembro del
+      // chat, para que los demás miembros lo vean sin leer users/. Solo se
+      // acepta si es idéntica a su users/; la escribe él mismo o un fundador.
+      match /people/{userId} {
+        function src() {
+          return get(/databases/$(database)/documents/users/$(userId)).data;
+        }
+        allow read: if canUseChat(chatId);
+        allow create, update: if canUseChat(chatId)
+          && userId in get(/databases/$(database)/documents/chats/$(chatId)).data.members
+          && request.resource.data.keys().hasOnly(['pub', 'profIv', 'profCt'])
+          && request.resource.data.pub == src().pub
+          && request.resource.data.profIv == src().profIv
+          && request.resource.data.profCt == src().profCt;
+        allow delete: if false;
+      }
+
+      // Copia de la foto (cifrada) de cada miembro del chat. Igual: idéntica
+      // a su avatars/.
+      match /avatars/{userId} {
+        function pic() {
+          return get(/databases/$(database)/documents/avatars/$(userId)).data;
+        }
+        allow read: if canUseChat(chatId);
+        allow create, update: if canUseChat(chatId)
+          && userId in get(/databases/$(database)/documents/chats/$(chatId)).data.members
+          && request.resource.data.keys().hasOnly(['iv', 'data'])
+          && request.resource.data.iv == pic().iv
+          && request.resource.data.data == pic().data;
+        allow delete: if false;
+      }
+
+      // Hasta dónde leyó cada quien (para "visto"). Cada quien solo el suyo.
+      match /reads/{userId} {
+        allow read: if canUseChat(chatId);
+        allow create, update: if canUseChat(chatId)
+          && request.auth.uid == userId
+          && request.resource.data.keys().hasOnly(['n', 'at'])
+          && request.resource.data.n is int
+          && request.resource.data.n >= 0
+          && request.resource.data.at == request.time;
         allow delete: if false;
       }
 

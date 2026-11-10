@@ -3,9 +3,9 @@
 /**
  * Waiting.tsx — Cuenta nueva esperando aprobación.
  *
- * Muestra tu código de seguridad. Otro miembro lo compara contigo (en
- * persona o por llamada) y te aprueba desde Configuración → Miembros; en ese
- * momento esta pantalla avanza sola.
+ * Muestra tu código de seguridad. Un fundador lo compara contigo (en persona
+ * o por llamada) y te aprueba desde Configuración → Miembros; en ese momento
+ * esta pantalla avanza sola.
  */
 
 import { useEffect, useState, type FormEvent } from "react";
@@ -37,8 +37,11 @@ export function Waiting({ session, email, onSession }: { session: Session; email
         handled = sig;
         void (async () => {
           try {
-            const from = await getDoc(doc(db, "users", d.from as string));
-            const pub = from.data()?.pub;
+            // La llave de quien aprueba viene en la aprobación (las reglas
+            // comprueban que es la suya). Las aprobaciones de antes no la
+            // traen: entonces se busca en users/, si las reglas lo dejan.
+            let pub: unknown = d.spub;
+            if (typeof pub !== "string") pub = (await getDoc(doc(db, "users", d.from as string))).data()?.pub;
             if (typeof pub !== "string") throw new Error("sin llave");
             onSession(
               await acceptWrap(db, session, { from: d.from as string, fp: d.fp as string, iv: String(d.iv), ct: String(d.ct) }, pub)
@@ -89,7 +92,7 @@ export function Waiting({ session, email, onSession }: { session: Session; email
         </div>
         <h1 className="text-lg font-medium tracking-tight">Falta que te aprueben</h1>
         <p className="text-sm text-neutral-400">
-          Pide a otro miembro que entre a <strong className="text-neutral-200">Configuración → Miembros</strong> y te
+          Pide a un fundador que entre a <strong className="text-neutral-200">Configuración → Miembros</strong> y te
           apruebe. Antes, comparen este código en persona o por llamada: debe ver exactamente el mismo.
         </p>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-4 text-center">
