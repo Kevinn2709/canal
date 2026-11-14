@@ -15,6 +15,9 @@
  *   entrega cifrada. Así nadie se queda sin poder leer.
  * - No leídos (por número de mensajes), menciones, fijados, silenciados y
  *   pendientes abiertos de todas las conversaciones.
+ * - "En línea": con la web a la vista, cada quien marca chats/{id}/presence
+ *   cada 90 s en todos sus chats. Solo lo ven quienes comparten un chat
+ *   contigo. Se puede apagar en Configuración.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -26,6 +29,7 @@ import {
   serverTimestamp,
   setDoc,
   where,
+  writeBatch,
   type DocumentData,
   type Timestamp,
   type Unsubscribe,
@@ -45,10 +49,13 @@ import {
   type LastPreview,
 } from "@/lib/chats";
 import { decryptTask, type Task } from "@/lib/tasks";
-import { setMuted } from "@/lib/push";
+import { loadSettings, onSettingsChange, setMuted } from "@/lib/push";
 import type { Session } from "@/lib/session";
 
 type Raw = { id: string; data: DocumentData };
+
+const HEARTBEAT_MS = 90_000; // cada cuánto se renueva "en línea"
+const ONLINE_MS = 200_000; // sin renovarse en este tiempo, ya no está en línea
 
 function toDate(value: unknown): Date | null {
   const ts = value as Timestamp | null | undefined;
@@ -84,7 +91,7 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /** Escucha una colección por cada id y desuscribe los que ya no están. */
-function useKeyedListeners(ids: string[], subscribe: (id: string) => Unsubscribe, onRemove: (id: string) => void) {
+export function useKeyedListeners(ids: string[], subscribe: (id: string) => Unsubscribe, onRemove: (id: string) => void) {
   const unsubs = useRef(new Map<string, Unsubscribe>());
   const sub = useRef(subscribe);
   const rem = useRef(onRemove);
@@ -153,6 +160,7 @@ export interface Workspace {
   unreadOf: (chat: ChatInfo) => number;
   mentionedIn: (chat: ChatInfo) => boolean;
   markRead: (chat: ChatInfo) => void;
+  isOnline: (uid: string) => boolean;
   togglePin: (chatId: string) => void;
   toggleMute: (chatId: string) => void;
   chatRaw: (chatId: string) => Uint8Array | null;
@@ -301,6 +309,87 @@ export function useWorkspace(session: Session): Workspace {
     () => (chatDocs ?? []).filter((c) => Array.isArray(c.data.members)).map((c) => c.id).sort(),
     [chatDocs]
   );
+  const allChatIds = useMemo(() => (chatDocs ?? []).map((c) => c.id).sort(), [chatDocs]);
+  const allChatsKey = allChatIds.join(",");
+
+  // ---------- En línea ----------
+  const [presence, setPresence] = useState<PerChat>(new Map());
+  useKeyedListeners(
+    allChatIds,
+    (chatId) =>
+      onSnapshot(
+        collection(getFirebase().db, "chats", chatId, "presence"),
+        (snap) =>
+          setPresence(setPerChat(chatId, snap.docs.map((d) => ({ id: d.id, data: () => d.data({ serverTimestamps: "estimate" }) })))),
+        () => undefined
+      ),
+    (chatId) => setPresence(dropPerChat(chatId))
+  );
+
+  // Mientras la web está a la vista, "en línea" en todos tus chats.
+  useEffect(() => {
+    if (!allChatsKey) return;
+    const ids = allChatsKey.split(",");
+    const { db } = getFirebase();
+    let show = loadSettings().showOnline;
+    let lastOn: boolean | null = null;
+    let timer: number | undefined;
+    const write = (on: boolean) => {
+      lastOn = on;
+      // De 10 en 10: las reglas revisan cada chat y tienen un límite por escritura.
+      for (let i = 0; i < ids.length; i += 10) {
+        const batch = writeBatch(db);
+        for (const id of ids.slice(i, i + 10)) batch.set(doc(db, "chats", id, "presence", uid), { on, at: serverTimestamp() });
+        void batch.commit().catch(() => undefined);
+      }
+    };
+    const update = () => {
+      window.clearInterval(timer);
+      if (show && document.visibilityState === "visible") {
+        write(true);
+        timer = window.setInterval(() => write(true), HEARTBEAT_MS);
+      } else if (lastOn !== false) {
+        write(false);
+      }
+    };
+    const leave = () => {
+      window.clearInterval(timer);
+      if (lastOn) write(false);
+    };
+    update();
+    document.addEventListener("visibilitychange", update);
+    window.addEventListener("pagehide", leave);
+    const stop = onSettingsChange((s) => {
+      if (s.showOnline !== show) {
+        show = s.showOnline;
+        update();
+      }
+    });
+    return () => {
+      document.removeEventListener("visibilitychange", update);
+      window.removeEventListener("pagehide", leave);
+      stop();
+      leave();
+    };
+  }, [allChatsKey, uid]);
+
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(t);
+  }, []);
+  const online = useMemo(() => {
+    const set = new Set<string>();
+    for (const docs of presence.values()) {
+      for (const [m, d] of docs) {
+        if (m === uid || d.on !== true) continue;
+        const at = toDate(d.at);
+        if (at && now - at.getTime() < ONLINE_MS) set.add(m);
+      }
+    }
+    return set;
+  }, [presence, now, uid]);
+  const isOnline = useCallback((id: string) => online.has(id), [online]);
 
   // ---------- Copias por chat: perfiles, fotos y hasta dónde leyó cada quien ----------
   const [mirrors, setMirrors] = useState<PerChat>(new Map());
@@ -833,6 +922,7 @@ export function useWorkspace(session: Session): Workspace {
     unreadOf,
     mentionedIn,
     markRead,
+    isOnline,
     togglePin,
     toggleMute,
     chatRaw,

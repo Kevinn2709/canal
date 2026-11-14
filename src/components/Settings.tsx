@@ -609,6 +609,31 @@ export function Settings({
             </p>
           </Section>
 
+          <Section title="Chats y llamadas (este dispositivo)">
+            <Toggle
+              label="Mantener el teclado abierto al enviar"
+              hint="Después de enviar, puedes escribir el siguiente mensaje sin volver a tocar la caja de texto."
+              checked={settings.keepKeyboard}
+              onChange={(v) => set({ keepKeyboard: v })}
+            />
+            <Toggle
+              label="Mostrar cuando estoy en línea"
+              hint="Solo lo ven quienes comparten un chat contigo. Si lo apagas, tampoco se guarda la hora."
+              checked={settings.showOnline}
+              onChange={(v) => set({ showOnline: v })}
+            />
+            <Toggle
+              label="Llamadas solo por relevo (ocultar mi IP)"
+              hint="La otra persona no ve tu dirección IP. Solo funciona si configuraste el relevo TURN en Vercel; si no, se ignora."
+              checked={settings.relayCalls}
+              onChange={(v) => set({ relayCalls: v })}
+            />
+            <p className="text-xs text-neutral-500">
+              Las llamadas van cifradas de extremo a extremo y, al colgar, no queda registro de ellas en la base de datos.
+              En iPhone, la llamada se corta si bloqueas la pantalla o cambias de app: es un límite de Safari.
+            </p>
+          </Section>
+
           {ws.admin && (
             <Section title="Miembros">
               <Members session={session} ws={ws} />

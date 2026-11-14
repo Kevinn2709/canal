@@ -10,6 +10,7 @@
  * - Lo abierto va en la URL (#c=id, #pendientes, #ajustes).
  * - Avisos de mensajes nuevos, contador en el título de la pestaña y en el
  *   ícono de la pantalla de inicio.
+ * - Llamadas 1 a 1: suenan aquí estés donde estés dentro de la web.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -25,6 +26,8 @@ import { unlockAudio } from "@/lib/sound";
 import type { Session } from "@/lib/session";
 import { useWorkspace } from "@/hooks/useWorkspace";
 import { useNotifier } from "@/hooks/useNotifier";
+import { useCalls } from "@/hooks/useCalls";
+import { CallScreen } from "./CallScreen";
 import { Sidebar } from "./Sidebar";
 import { ChatView } from "./ChatView";
 import { ChatDialog } from "./ChatDialog";
@@ -143,6 +146,7 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
 
   const viewingId = view?.type === "chat" ? view.id : null;
   const notifier = useNotifier({ ws, uid: session.uid, viewing: viewingId, settings, pushOn });
+  const calls = useCalls(session, user, ws);
 
   // Título de la pestaña y número en el ícono de la pantalla de inicio.
   const totalUnread = ws.chats.reduce((n, c) => n + (ws.muted.has(c.id) ? 0 : ws.unreadOf(c)), 0);
@@ -256,6 +260,8 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
             session={session}
             ws={ws}
             openTasks={ws.openTasks.filter((t) => t.chatId === selected.id)}
+            keepKeyboard={settings.keepKeyboard}
+            onCall={calls.canCall(selected) ? (video) => calls.start(selected, video) : null}
             onBack={back}
             onEdit={() => setDialog({ mode: "edit", chat: selected })}
             onLeft={back}
@@ -308,6 +314,8 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
           </div>
         </div>
       )}
+
+      <CallScreen calls={calls} ws={ws} />
 
       {dialog && (
         <ChatDialog

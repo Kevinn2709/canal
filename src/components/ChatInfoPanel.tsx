@@ -129,9 +129,12 @@ export function ChatInfoPanel({
             const p = ws.profiles.get(m);
             return (
               <li key={m} className="flex items-center gap-3 px-4 py-2.5">
-                <PersonAvatar ws={ws} uid={m} size={36} />
+                <PersonAvatar ws={ws} uid={m} size={36} dot />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm text-neutral-200">{m === uid ? `${ws.nameOf(m)} (tú)` : ws.nameOf(m)}</p>
+                  <p className="truncate text-sm text-neutral-200">
+                    {m === uid ? `${ws.nameOf(m)} (tú)` : ws.nameOf(m)}
+                    {m !== uid && ws.isOnline(m) && <span className="ml-1.5 text-xs text-emerald-400">en línea</span>}
+                  </p>
                   {p && <p className="font-mono text-[10px] text-neutral-600">{p.code}</p>}
                 </div>
                 {admin && !chat.legacy && m !== uid && chat.members.length > 2 && (

@@ -234,3 +234,69 @@ export function EditIcon(p: IconProps) {
     </Svg>
   );
 }
+
+export function PhoneIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M5 4h3.5l1.7 4.3-2.2 1.4a11 11 0 006.3 6.3l1.4-2.2L20 15.5V19a1.5 1.5 0 01-1.6 1.5A16 16 0 013.5 5.6 1.5 1.5 0 015 4z" />
+    </Svg>
+  );
+}
+
+/** Colgar: el teléfono de lado. */
+export function HangUpIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M3.6 13.8l-.8-2.3c-.2-.6 0-1.2.5-1.5A15.5 15.5 0 0112 8a15.5 15.5 0 018.7 2c.5.3.7.9.5 1.5l-.8 2.3a1 1 0 01-1.3.6l-3.3-1.3.2-2.4a10 10 0 00-8 0l.2 2.4-3.3 1.3a1 1 0 01-1.3-.6z" />
+    </Svg>
+  );
+}
+
+export function VideoIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <rect x="3" y="6.5" width="12" height="11" rx="2" />
+      <path d="M15 10.5l5.5-3v9l-5.5-3z" />
+    </Svg>
+  );
+}
+
+export function VideoOffIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M15 10.5l5.5-3v9l-5.5-3M3 6.5h10a2 2 0 012 2v7M15 17.5H5a2 2 0 01-2-2v-9M3 3l18 18" />
+    </Svg>
+  );
+}
+
+export function MicOffIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M9 9v2a3 3 0 005 2.2M15 10V6a3 3 0 00-5.7-1.3M5.5 11a6.5 6.5 0 0010.8 4.8M18.5 11a6.5 6.5 0 01-.4 2.2M12 17.5V21M3 3l18 18" />
+    </Svg>
+  );
+}
+
+export function CameraSwitchIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M4 8h3l1.5-2h7L17 8h3v11H4zM9.5 13.5a2.5 2.5 0 004.8.8M14.5 12.5a2.5 2.5 0 00-4.8-.8M14.5 10.5v2h-2M9.5 15.5v-2h2" />
+    </Svg>
+  );
+}
+
+export function StarIcon({ className, filled }: IconProps & { filled?: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className ?? "h-5 w-5"}
+    >
+      <path d="M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.8l-5.2 2.7 1-5.8L3.6 9.6l5.8-.8z" />
+    </svg>
+  );
+}

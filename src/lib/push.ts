@@ -22,21 +22,31 @@ export interface DeviceSettings {
   sound: boolean; // sonido con ese aviso
   system: boolean; // aviso del sistema con la web abierta pero en segundo plano
   names: boolean; // las notificaciones dicen de qué chat y de quién es
+  keepKeyboard: boolean; // al enviar, el teclado sigue abierto
+  showOnline: boolean; // los demás ven cuando estás "en línea"
+  relayCalls: boolean; // llamadas siempre por el servidor de relevo (oculta tu IP)
 }
 
 const SETTINGS_KEY = "canal:ajustes";
-const DEFAULTS: DeviceSettings = { inApp: true, sound: true, system: false, names: false };
+const DEFAULTS: DeviceSettings = {
+  inApp: true,
+  sound: true,
+  system: false,
+  names: false,
+  keepKeyboard: true,
+  showOnline: true,
+  relayCalls: false,
+};
 const SETTINGS_EVENT = "canal-ajustes";
 
 export function loadSettings(): DeviceSettings {
   try {
     const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") as Partial<DeviceSettings>;
-    return {
-      inApp: typeof raw.inApp === "boolean" ? raw.inApp : DEFAULTS.inApp,
-      sound: typeof raw.sound === "boolean" ? raw.sound : DEFAULTS.sound,
-      system: typeof raw.system === "boolean" ? raw.system : DEFAULTS.system,
-      names: typeof raw.names === "boolean" ? raw.names : DEFAULTS.names,
-    };
+    const out = { ...DEFAULTS };
+    for (const k of Object.keys(DEFAULTS) as (keyof DeviceSettings)[]) {
+      if (typeof raw[k] === "boolean") out[k] = raw[k] as boolean;
+    }
+    return out;
   } catch {
     return { ...DEFAULTS };
   }
@@ -297,6 +307,22 @@ export function notifyChat(getToken: () => Promise<string>, chatId: string, ment
       send([]);
     }, THROTTLE_MS - since)
   );
+}
+
+/** Avisa al otro miembro del chat de una llamada entrante (aunque tenga la web cerrada). */
+export function notifyCall(getToken: () => Promise<string>, chatId: string): void {
+  void post(getToken, { chatId, call: true }).catch(() => undefined);
+}
+
+/** Cierra los avisos de llamada de un chat (al contestar o al terminar). */
+export async function closeCallNotifications(chatId: string): Promise<void> {
+  try {
+    const reg = await registerServiceWorker();
+    const shown = (await reg?.getNotifications({ tag: `call-${chatId}` })) ?? [];
+    shown.forEach((n) => n.close());
+  } catch {
+    // Nada que cerrar.
+  }
 }
 
 /** Envía un aviso de prueba a tus propios dispositivos. */

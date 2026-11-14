@@ -21,6 +21,49 @@ export function unlockAudio(): void {
   }
 }
 
+function tone(freqs: number[], start: number, length: number, volume: number): void {
+  if (!ctx) return;
+  const gain = ctx.createGain();
+  gain.connect(ctx.destination);
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.exponentialRampToValueAtTime(volume, start + 0.03);
+  gain.gain.setValueAtTime(volume, start + length - 0.05);
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + length);
+  for (const f of freqs) {
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(f, start);
+    osc.connect(gain);
+    osc.start(start);
+    osc.stop(start + length + 0.02);
+  }
+}
+
+/**
+ * Tono de llamada: "in" (te llaman: doble timbre) u "out" (estás llamando:
+ * tono de espera). Devuelve la función para pararlo.
+ */
+export function startRing(kind: "in" | "out"): () => void {
+  unlockAudio();
+  const play = () => {
+    if (!ctx || ctx.state !== "running") return;
+    try {
+      const t = ctx.currentTime;
+      if (kind === "in") {
+        tone([440, 480], t, 0.4, 0.16);
+        tone([440, 480], t + 0.6, 0.4, 0.16);
+      } else {
+        tone([425], t, 1.0, 0.08);
+      }
+    } catch {
+      // Sin audio disponible.
+    }
+  };
+  play();
+  const timer = window.setInterval(play, kind === "in" ? 2500 : 3500);
+  return () => window.clearInterval(timer);
+}
+
 export function playMessageSound(): void {
   if (!ctx || ctx.state !== "running") return;
   try {

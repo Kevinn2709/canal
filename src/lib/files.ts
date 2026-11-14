@@ -22,6 +22,7 @@ import {
   getDoc,
   serverTimestamp,
   setDoc,
+  type DocumentReference,
   type Firestore,
 } from "firebase/firestore";
 import { decryptBytes, encryptBytes } from "./crypto";
@@ -62,6 +63,12 @@ export interface PreparedFile {
 
 function chunkId(i: number): string {
   return String(i).padStart(4, "0");
+}
+
+/** Los trozos de un archivo de una conversación (para borrarlos con su mensaje). */
+export function chatFileChunks(db: Firestore, chat: { id: string; legacy: boolean }, info: FileInfo): DocumentReference[] {
+  const [root, ...rest] = chat.legacy ? ["files"] : ["chats", chat.id, "files"];
+  return Array.from({ length: info.chunks }, (_, i) => doc(db, root, ...rest, info.id, "chunks", chunkId(i)));
 }
 
 function fileAad(fileId: string, index: number, total: number): string {

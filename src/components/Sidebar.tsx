@@ -84,7 +84,7 @@ function ChatRow({
 
   let preview: string;
   if (!chat.key) preview = "Esperando la llave de este chat…";
-  else if (chat.last) {
+  else if (chat.last && chat.last.text) {
     const who = chat.last.by === myUid ? "Tú: " : group ? `${ws.nameOf(chat.last.by)}: ` : "";
     preview = who + chat.last.text;
   } else preview = chat.group;

@@ -9,8 +9,10 @@
  *   grupos, "visto por…").
  * - Al enviar: se actualiza la vista previa cifrada de la lista, el contador
  *   de no leídos y se avisa (push) a los demás miembros.
- * - Pendientes e información del chat en paneles laterales.
- * - Nada se borra: las reglas de Firestore prohíben editar o eliminar mensajes.
+ * - Pendientes, destacados e información del chat en paneles laterales.
+ * - Destacar (cualquiera), eliminar para todos (quien lo envió o un
+ *   fundador) y vaciar el chat menos los destacados (solo fundadores).
+ * - En chats de dos: "en línea" y botones de llamada y videollamada.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent } from "react";
@@ -52,6 +54,7 @@ import {
   type PreparedFile,
 } from "@/lib/files";
 import { setReaction } from "@/lib/reactions";
+import { clearChat, deleteMessage, setStar, type StoredMessage } from "@/lib/messages";
 import { createTask, MAX_TASK_LENGTH, type Task } from "@/lib/tasks";
 import { notifyChat } from "@/lib/push";
 import { dayKey, dayLabel, formatTime } from "@/lib/format";
@@ -67,7 +70,8 @@ import { Composer, MAX_LENGTH, type PendingAttachment } from "./Composer";
 import { MessageActions } from "./MessageActions";
 import { MessageItem, type ChatMessage } from "./MessageItem";
 import { TasksPanel } from "./Tasks";
-import { BackIcon, BellOffIcon, FileIcon, MicIcon, MoreIcon, TasksIcon } from "./Icons";
+import { StarredPanel } from "./StarredPanel";
+import { BackIcon, BellOffIcon, FileIcon, MicIcon, MoreIcon, PhoneIcon, TasksIcon, VideoIcon } from "./Icons";
 
 interface Decrypted {
   payload: Payload | null;
@@ -98,6 +102,8 @@ interface ViewProps {
   session: Session;
   ws: Workspace;
   openTasks: Task[];
+  keepKeyboard: boolean;
+  onCall: ((video: boolean) => void) | null; // null: no se puede llamar en este chat
   onBack: () => void;
   onEdit: () => void;
   onLeft: () => void;
@@ -142,6 +148,8 @@ function ChatRoom({
   ws,
   cryptoKey,
   openTasks,
+  keepKeyboard,
+  onCall,
   onBack,
   onEdit,
   onLeft,
@@ -162,7 +170,9 @@ function ChatRoom({
   const [focusSignal, setFocusSignal] = useState(0);
   const [actionFor, setActionFor] = useState<ChatMessage | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
-  const [panel, setPanel] = useState<"tasks" | "info" | null>(null);
+  const [panel, setPanel] = useState<"tasks" | "info" | "starred" | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [clearing, setClearing] = useState<string | null>(null);
 
   const reactions = useReactions(chat.id, cryptoKey);
   const { typing, setTyping } = useTyping(chat.id, user.uid);
@@ -202,7 +212,13 @@ function ChatRoom({
           const data = d.data({ serverTimestamps: "estimate" });
           const ts = data.createdAt as Timestamp | null | undefined;
           const uid = typeof data.uid === "string" ? data.uid : "";
-          const base = { id: d.id, uid, createdAt: ts ? ts.toDate() : null, pending: d.metadata.hasPendingWrites };
+          const base = {
+            id: d.id,
+            uid,
+            createdAt: ts ? ts.toDate() : null,
+            pending: d.metadata.hasPendingWrites,
+            starred: data.star === true,
+          };
 
           if (typeof data.ct === "string" && typeof data.iv === "string") {
             let plain = plainCache.current.get(d.id);
@@ -510,6 +526,58 @@ function ChatRoom({
       .catch(() => setError("No se pudo copiar."));
   };
 
+  const toggleStar = (m: ChatMessage) => {
+    setStar(getFirebase().db, chat.id, m.id, !m.starred)
+      .then(() => showNotice(m.starred ? "Ya no está destacado" : "Mensaje destacado"))
+      .catch(() => setError("No se pudo destacar el mensaje."));
+  };
+
+  const canDelete = (m: ChatMessage) => !m.pending && (m.uid === user.uid || ws.admin);
+
+  const removeMessage = async (m: ChatMessage) => {
+    // Si era el último, la vista previa de la lista pasa al anterior.
+    const i = messages.findIndex((x) => x.id === m.id);
+    let newLast: StoredMessage | null | undefined;
+    if (i !== -1 && i === messages.length - 1) {
+      const prev = messages[i - 1];
+      newLast = prev ? { id: prev.id, uid: prev.uid, createdAt: prev.createdAt, payload: prev.payload } : hasMore ? undefined : null;
+    }
+    try {
+      await deleteMessage(getFirebase().db, chat, cryptoKey, user.uid, m, newLast);
+      plainCache.current.delete(m.id);
+      if (replyTo?.id === m.id) setReplyTo(null);
+      showNotice("Mensaje eliminado");
+    } catch (err) {
+      setError(
+        (err as { code?: string }).code === "permission-denied"
+          ? "No tienes permiso para eliminar ese mensaje."
+          : "No se pudo eliminar. Revisa tu conexión."
+      );
+    }
+  };
+
+  const runClear = async () => {
+    setConfirmClear(false);
+    setClearing("Vaciando…");
+    try {
+      const r = await clearChat(getFirebase().db, chat, cryptoKey, user.uid, (done, total) =>
+        setClearing(`Vaciando… ${done} de ${total}`)
+      );
+      plainCache.current.clear();
+      showNotice(
+        r.deleted === 0
+          ? "No había mensajes para borrar."
+          : `Chat vaciado: ${r.deleted} ${r.deleted === 1 ? "mensaje borrado" : "mensajes borrados"}${
+              r.kept ? `, ${r.kept} ${r.kept === 1 ? "destacado conservado" : "destacados conservados"}` : ""
+            }.`
+      );
+    } catch {
+      setError("No se pudo vaciar por completo. Revisa tu conexión e inténtalo de nuevo.");
+    } finally {
+      setClearing(null);
+    }
+  };
+
   const taskFromMessage = (m: ChatMessage) => {
     const text =
       m.payload?.t === "text" ? m.payload.text.slice(0, MAX_TASK_LENGTH) : previewOf(m.payload);
@@ -586,6 +654,8 @@ function ChatRoom({
         : typing.length === 1
           ? `${ws.nameOf(typing[0])} está escribiendo…`
           : `${typing.map(ws.nameOf).join(" y ")} están escribiendo…`;
+  const other = !group ? others[0] : undefined;
+  const otherOnline = !!other && ws.isOnline(other);
   const subtitle = group
     ? chat.members.map((x) => (x === user.uid ? "Tú" : ws.nameOf(x))).join(", ")
     : `${chat.group}${chat.archived ? " · archivada" : ""}`;
@@ -619,10 +689,36 @@ function ChatRoom({
                 {muted && <BellOffIcon className="h-3.5 w-3.5 shrink-0 text-neutral-500" />}
               </span>
               <span className="block truncate text-xs text-neutral-500">
-                {typingLabel ? <span className="text-emerald-400">{typingLabel}</span> : subtitle}
+                {typingLabel ? (
+                  <span className="text-emerald-400">{typingLabel}</span>
+                ) : otherOnline ? (
+                  <span className="text-emerald-400">en línea</span>
+                ) : (
+                  subtitle
+                )}
               </span>
             </span>
           </button>
+          {onCall && (
+            <>
+              <button
+                onClick={() => onCall(false)}
+                className="rounded-full p-2 text-neutral-300 hover:bg-neutral-900"
+                aria-label="Llamar"
+                title="Llamada cifrada"
+              >
+                <PhoneIcon />
+              </button>
+              <button
+                onClick={() => onCall(true)}
+                className="rounded-full p-2 text-neutral-300 hover:bg-neutral-900"
+                aria-label="Videollamada"
+                title="Videollamada cifrada"
+              >
+                <VideoIcon />
+              </button>
+            </>
+          )}
           <button
             onClick={() => setPanel((p) => (p === "tasks" ? null : "tasks"))}
             className={`relative rounded-full p-2 hover:bg-neutral-900 ${panel === "tasks" ? "text-neutral-100" : "text-neutral-300"}`}
@@ -660,6 +756,15 @@ function ChatRoom({
                   <button
                     onClick={() => {
                       setMenuOpen(false);
+                      setPanel("starred");
+                    }}
+                    className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
+                  >
+                    Mensajes destacados
+                  </button>
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
                       ws.toggleMute(chat.id);
                     }}
                     className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
@@ -685,6 +790,16 @@ function ChatRoom({
                         className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
                       >
                         {chat.archived ? "Desarchivar" : "Archivar"}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setMenuOpen(false);
+                          setConfirmClear(true);
+                        }}
+                        disabled={!!clearing}
+                        className="block w-full px-3 py-2 text-left text-red-400 hover:bg-neutral-800 disabled:opacity-40"
+                      >
+                        Vaciar chat…
                       </button>
                     </>
                   )}
@@ -774,9 +889,9 @@ function ChatRoom({
           </div>
         )}
 
-        {notice && (
+        {(clearing || notice) && (
           <div className="shrink-0 border-t border-neutral-900 bg-neutral-900 px-4 py-2 text-xs text-neutral-300" role="status">
-            {notice}
+            {clearing ?? notice}
           </div>
         )}
 
@@ -788,6 +903,7 @@ function ChatRoom({
           preparing={preparing}
           replyTo={replyTo ? { author: replyTo.uid === user.uid ? "ti" : ws.nameOf(replyTo.uid), preview: replyTo.preview } : null}
           focusSignal={focusSignal}
+          keepKeyboard={keepKeyboard}
           onAddFiles={(files) => void addFiles(files)}
           onRemoveAttachment={removeAttachment}
           onCancelReply={() => setReplyTo(null)}
@@ -816,6 +932,17 @@ function ChatRoom({
         />
       )}
 
+      {panel === "starred" && (
+        <StarredPanel
+          chat={chat}
+          ws={ws}
+          uid={user.uid}
+          cryptoKey={cryptoKey}
+          onJump={jumpTo}
+          onClose={() => setPanel(null)}
+        />
+      )}
+
       {panel === "info" && (
         <ChatInfoPanel
           chat={chat}
@@ -834,6 +961,16 @@ function ChatRoom({
           canCopy={
             actionFor.payload?.t === "text" || (actionFor.payload?.t === "file" && !!actionFor.payload.text)
           }
+          starred={actionFor.starred}
+          canDelete={canDelete(actionFor)}
+          onStar={() => {
+            toggleStar(actionFor);
+            setActionFor(null);
+          }}
+          onDelete={() => {
+            void removeMessage(actionFor);
+            setActionFor(null);
+          }}
           onReact={(emoji) => {
             toggleReaction(actionFor, emoji);
             setActionFor(null);
@@ -852,6 +989,39 @@ function ChatRoom({
           }}
           onClose={() => setActionFor(null)}
         />
+      )}
+
+      {confirmClear && (
+        <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/50 sm:items-center" onClick={() => setConfirmClear(false)}>
+          <div
+            role="dialog"
+            aria-label="Vaciar chat"
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm space-y-3 rounded-t-2xl border border-neutral-800 bg-neutral-900 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:rounded-2xl"
+          >
+            <p className="text-[15px] font-medium text-neutral-100">¿Vaciar «{chat.name}»?</p>
+            <p className="text-sm text-neutral-400">
+              Se borran para todos los mensajes de este chat, con sus reacciones, fotos y notas de voz.{" "}
+              <strong className="text-neutral-200">Los mensajes destacados se conservan.</strong> No se puede deshacer.
+            </p>
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmClear(false)}
+                className="flex-1 rounded-xl border border-neutral-700 py-2.5 text-sm text-neutral-300 hover:bg-neutral-800"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void runClear()}
+                className="flex-1 rounded-xl bg-red-600 py-2.5 text-sm font-medium text-white hover:bg-red-500"
+              >
+                Vaciar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {viewer && <Lightbox file={viewer.file} url={viewer.url} store={fileStore} onClose={() => setViewer(null)} />}

@@ -3,7 +3,9 @@
 /**
  * Composer.tsx — La barra para escribir.
  *
- * - Texto (Enter envía en computadora; en el teléfono, el botón).
+ * - Texto (Enter envía en computadora; en el teléfono, el botón). Con
+ *   "mantener el teclado abierto" (Configuración), el teclado no se cierra
+ *   al enviar.
  * - Clip para adjuntar; también se puede pegar o arrastrar al chat.
  * - Carita para stickers.
  * - Micrófono (cuando la caja está vacía) para notas de voz: tocar para
@@ -46,6 +48,7 @@ export function Composer({
   preparing,
   replyTo,
   focusSignal,
+  keepKeyboard,
   onAddFiles,
   onRemoveAttachment,
   onCancelReply,
@@ -61,6 +64,7 @@ export function Composer({
   preparing: boolean;
   replyTo: { author: string; preview: string } | null;
   focusSignal: number;
+  keepKeyboard: boolean;
   onAddFiles: (files: File[]) => void;
   onRemoveAttachment: (localId: string) => void;
   onCancelReply: () => void;
@@ -327,6 +331,17 @@ export function Composer({
               <button
                 type="submit"
                 disabled={preparing}
+                // Con "mantener el teclado abierto", tocar Enviar no le quita
+                // el foco a la caja de texto (así el teclado no se cierra).
+                onMouseDown={keepKeyboard ? (e: { preventDefault(): void }) => e.preventDefault() : undefined}
+                onTouchEnd={
+                  keepKeyboard
+                    ? (e: { preventDefault(): void }) => {
+                        e.preventDefault();
+                        void submit();
+                      }
+                    : undefined
+                }
                 className="shrink-0 rounded-full bg-neutral-100 p-2.5 text-neutral-900 transition-colors hover:bg-white disabled:opacity-30"
                 aria-label="Enviar"
               >

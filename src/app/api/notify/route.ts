@@ -2,7 +2,8 @@
  * /api/notify — Envía las notificaciones push (función de Vercel, gratis).
  *
  * GET  -> { publicKey } : la llave pública VAPID (o null si falta configurarla).
- * POST -> avisa a los demás miembros de un chat que hay un mensaje nuevo.
+ * POST -> avisa a los demás miembros de un chat que hay un mensaje nuevo
+ *         (o, con call: true, que los están llamando).
  *
  * Seguridad:
  * - No usa ninguna cuenta de servicio ni llave de Firebase. Lee Firestore con
@@ -171,7 +172,7 @@ export async function POST(req: Request): Promise<Response> {
   const me = token ? uidFromToken(token) : null;
   if (!token || !me) return json({ error: "unauthorized" }, 401);
 
-  let body: { chatId?: unknown; mentions?: unknown; test?: unknown };
+  let body: { chatId?: unknown; mentions?: unknown; test?: unknown; call?: unknown };
   try {
     const text = await req.text();
     if (text.length > 4000) return json({ error: "too-large" }, 413);
@@ -182,6 +183,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const fs = new Firestore(firebaseConfig.projectId, token);
   const test = body.test === true;
+  const call = body.call === true; // llamada entrante: suena aunque el chat esté silenciado
   const chatId = typeof body.chatId === "string" ? body.chatId : "";
   if (!test && !ID_RE.test(chatId)) return json({ error: "bad-request" }, 400);
   const mentions = new Set(
@@ -224,11 +226,15 @@ export async function POST(req: Request): Promise<Response> {
     const data = pushDocs.get(uid);
     const mentioned = mentions.has(uid);
     const muted = Array.isArray(data?.muted) && (data?.muted as unknown[]).includes(chatId);
-    if (muted && !mentioned && !test) continue; // chat silenciado (salvo que te mencionen)
-    const payload = JSON.stringify(test ? { c: "", t: 1 } : { c: chatId, f: me, m: mentioned ? 1 : 0 });
+    if (muted && !mentioned && !test && !call) continue; // chat silenciado (salvo que te mencionen)
+    const payload = JSON.stringify(
+      test ? { c: "", t: 1 } : call ? { c: chatId, f: me, k: 1 } : { c: chatId, f: me, m: mentioned ? 1 : 0 }
+    );
     for (const target of subscriptionsOf(data)) {
       jobs.push(
-        sendPush(target, payload, vapid, { topic: test ? "prueba" : chatId })
+        // Una llamada solo sirve unos segundos: si el teléfono no la recibe a
+        // tiempo, el servicio de push la descarta.
+        sendPush(target, payload, vapid, call ? { topic: `l${chatId}`, ttl: 45 } : { topic: test ? "prueba" : chatId })
           .then((status) => {
             if (status >= 200 && status < 300) sent++;
             else if (status === 404 || status === 410) gone++;

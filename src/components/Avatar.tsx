@@ -5,6 +5,7 @@
  * una conversación.
  */
 
+import type { ReactNode } from "react";
 import { initials } from "@/lib/members";
 import type { Workspace } from "@/hooks/useWorkspace";
 import type { ChatInfo } from "@/lib/chats";
@@ -36,27 +37,63 @@ export function Avatar({
   );
 }
 
-export function PersonAvatar({ ws, uid, size = 40 }: { ws: Workspace; uid: string; size?: number }) {
-  const p = ws.profiles.get(uid);
+/** Punto verde de "en línea" sobre una foto. */
+function WithDot({ on, size, children }: { on: boolean; size: number; children: ReactNode }) {
+  if (!on) return <>{children}</>;
+  const dot = Math.max(9, Math.round(size * 0.26));
   return (
-    <Avatar
-      name={p?.valid ? p.name : "?"}
-      color={p?.color ?? "#737373"}
-      url={p && p.photo ? ws.avatars.get(uid) : null}
-      size={size}
-    />
+    <span className="relative inline-flex shrink-0">
+      {children}
+      <span
+        style={{ width: dot, height: dot }}
+        className="absolute bottom-0 right-0 rounded-full border-2 border-neutral-950 bg-emerald-500"
+        aria-label="en línea"
+        title="en línea"
+      />
+    </span>
   );
 }
 
-/** Chat privado: la foto del otro. Grupo: ícono de grupo. */
+export function PersonAvatar({
+  ws,
+  uid,
+  size = 40,
+  dot = false,
+}: {
+  ws: Workspace;
+  uid: string;
+  size?: number;
+  dot?: boolean; // mostrar el punto de "en línea"
+}) {
+  const p = ws.profiles.get(uid);
+  return (
+    <WithDot on={dot && ws.isOnline(uid)} size={size}>
+      <Avatar
+        name={p?.valid ? p.name : "?"}
+        color={p?.color ?? "#737373"}
+        url={p && p.photo ? ws.avatars.get(uid) : null}
+        size={size}
+      />
+    </WithDot>
+  );
+}
+
+/** Chat privado: la foto del otro (con su "en línea"). Grupo: ícono de grupo. */
 export function ChatAvatar({ ws, chat, myUid, size = 44 }: { ws: Workspace; chat: ChatInfo; myUid: string; size?: number }) {
   const others = chat.members.filter((m) => m !== myUid);
-  if (others.length === 1 && !chat.rawName) return <PersonAvatar ws={ws} uid={others[0]} size={size} />;
+  if (others.length === 1 && !chat.rawName) return <PersonAvatar ws={ws} uid={others[0]} size={size} dot />;
   if (others.length === 1) {
     const p = ws.profiles.get(others[0]);
-    if (p?.photo && ws.avatars.get(others[0])) return <PersonAvatar ws={ws} uid={others[0]} size={size} />;
+    if (p?.photo && ws.avatars.get(others[0])) return <PersonAvatar ws={ws} uid={others[0]} size={size} dot />;
   }
-  if (others.length <= 1) {
+  if (others.length === 1) {
+    return (
+      <WithDot on={ws.isOnline(others[0])} size={size}>
+        <Avatar name={chat.name} color="#a3a3a3" size={size} />
+      </WithDot>
+    );
+  }
+  if (others.length === 0) {
     return <Avatar name={chat.name} color="#a3a3a3" size={size} />;
   }
   return (

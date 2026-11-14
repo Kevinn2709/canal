@@ -8,7 +8,8 @@
  * - Menciones (@nombre) resaltadas; si te mencionan, el mensaje se marca.
  * - Texto, foto, archivo, video/audio, nota de voz o sticker.
  * - Reacciones debajo; tocar una reacción pone o quita la tuya.
- * - Acciones (reaccionar, responder, copiar, pendiente): pulsación larga en el
+ * - Estrella si está destacado.
+ * - Acciones (reaccionar, responder, copiar, pendiente, destacar, eliminar): pulsación larga en el
  *   teléfono, clic derecho o el botón "…" que aparece al pasar el ratón.
  */
 
@@ -24,7 +25,7 @@ import {
   MediaAttachment,
   StickerAttachment,
 } from "./Attachments";
-import { MoreIcon } from "./Icons";
+import { MoreIcon, StarIcon } from "./Icons";
 import { VoiceNote } from "./VoiceNote";
 
 export interface ChatMessage {
@@ -34,6 +35,7 @@ export interface ChatMessage {
   state: "ok" | "failed" | "legacy"; // legacy = mensaje antiguo sin cifrar
   createdAt: Date | null;
   pending: boolean;
+  starred: boolean;
 }
 
 const LONG_PRESS_MS = 450;
@@ -257,7 +259,14 @@ export function MessageItem({
               </button>
             )}
             {content()}
-            <p className={`mt-0.5 text-right text-[10px] ${isMedia ? "px-1.5" : ""} ${footerColor}`}>{footer}</p>
+            <p className={`mt-0.5 flex items-center justify-end gap-1 text-[10px] ${isMedia ? "px-1.5" : ""} ${footerColor}`}>
+              {m.starred && (
+                <span title="Destacado" aria-label="Destacado" className="text-amber-500">
+                  <StarIcon filled className="h-3 w-3" />
+                </span>
+              )}
+              {footer}
+            </p>
           </div>
 
           {groups.length > 0 && (

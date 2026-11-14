@@ -5,7 +5,8 @@
  * El aviso no trae el texto del mensaje (sigue cifrado de extremo a
  * extremo): solo el id del chat, quién escribió y si te mencionaron. Si en
  * Configuración activaste "Mostrar el nombre del chat", los nombres salen de
- * una lista guardada en este dispositivo; si no, dice solo "Nuevo mensaje".
+ * una lista guardada en este dispositivo; si no, dice solo "Nuevo mensaje"
+ * (o "Llamada entrante").
  *
  * No guarda la app en caché: siempre se carga la versión más reciente.
  */
@@ -56,6 +57,16 @@ async function buildNotification(data) {
   const names = await readNames();
   const chatName = names && names.chats && names.chats[chatId];
   const person = names && names.people && typeof data.f === "string" && names.people[data.f];
+  if (data.k) {
+    // Llamada entrante: se queda a la vista hasta que la toques.
+    return {
+      title: chatName || "Llamada",
+      body: person ? `${person} te está llamando` : "Llamada entrante",
+      tag: `call-${chatId}`,
+      chatId,
+      call: true,
+    };
+  }
   const title = chatName || APP_NAME;
   let body;
   if (data.m) body = person ? `${person} te mencionó` : "Te mencionaron";
@@ -77,14 +88,19 @@ self.addEventListener("push", (event) => {
         body: n.body,
         tag: n.tag,
         renotify: true,
+        requireInteraction: !!n.call,
+        vibrate: n.call ? [400, 200, 400, 200, 400] : undefined,
         icon: "/icon-192.png",
         badge: "/badge-96.png",
         data: { chatId: n.chatId },
       });
       // Si ya tienes ese chat abierto y a la vista, no hace falta el aviso.
+      // Una llamada suena dentro de la web si está a la vista.
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       const viewing = windows.some(
-        (w) => w.focused && w.visibilityState === "visible" && n.chatId && w.url.includes(`#c=${n.chatId}`)
+        (w) =>
+          w.visibilityState === "visible" &&
+          (n.call || (w.focused && n.chatId && w.url.includes(`#c=${n.chatId}`)))
       );
       if (viewing) {
         const shown = await self.registration.getNotifications({ tag: n.tag });

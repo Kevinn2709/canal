@@ -69,6 +69,40 @@ service cloud.firestore {
             || (!('members' in c) && isFounder()));
     }
 
+    // ¿`uid` es miembro de este chat? (En las de antes, los fundadores.)
+    function chatHas(chatId, uid) {
+      let c = get(/databases/$(database)/documents/chats/$(chatId)).data;
+      return (('members' in c) && uid in c.members) || (!('members' in c) && uid in founders());
+    }
+
+    // ¿El mensaje ya no existe (después de esta escritura)? Para poder borrar
+    // las reacciones de un mensaje eliminado.
+    function msgGone(chatId, msgId) {
+      return (chatId == 'general'
+          && !existsAfter(/databases/$(database)/documents/messages/$(msgId)))
+        || (chatId != 'general'
+          && !existsAfter(/databases/$(database)/documents/chats/$(chatId)/messages/$(msgId)));
+    }
+
+    // Destacar o quitar el destacado: solo cambia el campo "star".
+    function validStar() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['star'])
+        && request.resource.data.star is bool;
+    }
+
+    // Señal de llamada: solo texto cifrado, a nombre de quien la envía.
+    function validSignal(fields) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(fields)
+        && d.from == request.auth.uid
+        && d.iv is string
+        && d.iv.size() == 16
+        && d.ct is string
+        && d.ct.size() > 0
+        && d.ct.size() <= 30000
+        && d.at == request.time;
+    }
+
     // Un mensaje: solo texto cifrado, a nombre de quien lo envía.
     function validMessage() {
       let d = request.resource.data;
@@ -335,6 +369,12 @@ service cloud.firestore {
           && request.resource.data.members.size() == resource.data.members.size() - 1
           && request.resource.data.members.toSet()
                == resource.data.members.toSet().difference([request.auth.uid].toSet()))
+        // Nueva vista previa (cifrada) al eliminar mensajes (cualquier miembro).
+        || (changed().hasOnly(['lastIv', 'lastCt'])
+          && request.resource.data.lastIv is string
+          && request.resource.data.lastIv.size() == 16
+          && request.resource.data.lastCt is string
+          && request.resource.data.lastCt.size() <= 2000)
         // De aquí en adelante, solo un fundador.
         // Renombrar o cambiar de proyecto.
         || (isAdmin() && changed().hasOnly(['metaIv', 'metaCt'])
@@ -377,14 +417,19 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      // Mensajes. Cualquier miembro puede destacar uno; lo elimina quien lo
+      // envió o un fundador (también al vaciar el chat).
       match /messages/{messageId} {
         allow read: if canUseChat(chatId);
         allow create: if canUseChat(chatId) && validMessage();
-        allow update, delete: if false;
+        allow update: if canUseChat(chatId) && validStar();
+        allow delete: if canUseChat(chatId)
+          && (resource == null || resource.data.uid == request.auth.uid || isAdmin());
       }
 
       // Reacciones: una por persona y mensaje ({mensaje}_{uid}). El emoji va
-      // cifrado; quitarla la deja vacía. Cada quien solo toca la suya.
+      // cifrado; quitarla la deja vacía. Cada quien solo toca la suya. Se
+      // borran junto con su mensaje.
       match /reactions/{reactionId} {
         allow read: if canUseChat(chatId);
         allow create, update: if canUseChat(chatId)
@@ -397,7 +442,10 @@ service cloud.firestore {
           && request.resource.data.iv is string
           && request.resource.data.iv.size() == 16
           && request.resource.data.updatedAt == request.time;
-        allow delete: if false;
+        allow delete: if canUseChat(chatId)
+          && (isAdmin()
+              || resource.data.uid == request.auth.uid
+              || msgGone(chatId, resource.data.msg));
       }
 
       // "escribiendo…": solo la hora (o null). Cada quien solo el suyo.
@@ -408,6 +456,44 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly(['at'])
           && (request.resource.data.at == null || request.resource.data.at == request.time);
         allow delete: if false;
+      }
+
+      // "en línea": encendido o apagado y la hora. Solo lo ven los miembros de
+      // este chat. Cada quien solo el suyo.
+      match /presence/{userId} {
+        allow read: if canUseChat(chatId);
+        allow create, update: if canUseChat(chatId)
+          && request.auth.uid == userId
+          && request.resource.data.keys().hasOnly(['on', 'at'])
+          && request.resource.data.on is bool
+          && request.resource.data.at == request.time;
+        allow delete: if false;
+      }
+
+      // Llamadas 1 a 1. La oferta y las señales para conectar van cifradas
+      // con la llave del chat; el audio y el video van directo entre los dos
+      // teléfonos. Al colgar se borra todo.
+      match /calls/{callId} {
+        allow read: if canUseChat(chatId);
+        allow create: if canUseChat(chatId)
+          && validSignal(['from', 'to', 'iv', 'ct', 'at'])
+          && request.resource.data.to is string
+          && request.resource.data.to != request.auth.uid
+          && chatHas(chatId, request.resource.data.to);
+        allow update: if false;
+        allow delete: if canUseChat(chatId);
+
+        match /sig/{sigId} {
+          function theCall() {
+            return get(/databases/$(database)/documents/chats/$(chatId)/calls/$(callId)).data;
+          }
+          allow read: if canUseChat(chatId);
+          allow create: if canUseChat(chatId)
+            && (request.auth.uid == theCall().from || request.auth.uid == theCall().to)
+            && validSignal(['from', 'iv', 'ct', 'at']);
+          allow update: if false;
+          allow delete: if canUseChat(chatId);
+        }
       }
 
       // Copia del perfil (llave pública + perfil cifrado) de cada miembro del
@@ -463,10 +549,13 @@ service cloud.firestore {
       }
 
       // Archivos de las conversaciones nuevas.
+      // Se borran con su mensaje: quien los subió o un fundador.
       match /files/{fileId}/chunks/{chunkId} {
         allow read: if canUseChat(chatId);
         allow create: if canUseChat(chatId) && validChunk();
-        allow update, delete: if false;
+        allow update: if false;
+        allow delete: if canUseChat(chatId)
+          && (resource == null || resource.data.uid == request.auth.uid || isAdmin());
       }
     }
 
@@ -505,13 +594,15 @@ service cloud.firestore {
     match /messages/{messageId} {
       allow read: if isFounder();
       allow create: if isFounder() && validMessage();
-      allow update, delete: if false;
+      allow update: if isFounder() && validStar();
+      allow delete: if isFounder();
     }
 
     match /files/{fileId}/chunks/{chunkId} {
       allow read: if isFounder();
       allow create: if isFounder() && validChunk();
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if isFounder();
     }
 
     match /stickers/{stickerId} {

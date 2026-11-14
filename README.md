@@ -36,7 +36,7 @@ Usa:
    reglas de Firestore tampoco le dejan leer nada de ese chat.
 5. **Mensajes:** se cifran en el teléfono antes de enviarse (AES-GCM, IV
    aleatorio; el chat y el remitente van autenticados). En Firestore solo hay
-   texto cifrado. Nada se edita ni se borra.
+   texto cifrado. Los mensajes no se editan.
 6. **Conversaciones de antes:** las que existían antes de los perfiles son
    solo de los dos fundadores y siguen con la llave de la frase compartida.
    Cada fundador la escribe una única vez al actualizar.
@@ -69,6 +69,56 @@ Usa:
     Los chats silenciados no avisan, salvo que te mencionen.
 13. **Recordar en este dispositivo** (opcional): guarda la llave personal (no
     la frase) en el navegador. "Cerrar sesión" la borra.
+14. **Destacar, eliminar y vaciar** (pulsación larga o clic derecho en un
+    mensaje):
+    - **Destacar**: cualquiera del chat. Sale una estrella y el mensaje
+      aparece en ⋯ → Mensajes destacados.
+    - **Eliminar**: se borra para todos, de verdad (con sus reacciones, fotos
+      o notas de voz). Lo puede hacer quien lo envió o un fundador.
+    - **Vaciar chat** (⋯ → Vaciar chat, solo fundadores): borra todos los
+      mensajes menos los destacados.
+15. **En línea:** con la web abierta y a la vista, los demás de tus chats ven
+    "en línea" (punto verde). Solo quienes comparten un chat contigo. Se
+    apaga en Configuración → Chats y llamadas.
+16. **Mantener el teclado abierto** (Configuración, encendido de fábrica):
+    al enviar, el teclado no se cierra.
+17. **Llamadas 1 a 1** (voz y video), en los chats de dos personas: ver
+    abajo.
+
+## Llamadas
+
+- **Cómo se cifran:** el audio y el video van por WebRTC, que siempre los
+  cifra (DTLS-SRTP) y, si la red lo permite, van directo de un teléfono al
+  otro. Para conectarse, los teléfonos se pasan por Firestore una oferta,
+  una respuesta y sus direcciones de red, **cifradas con la llave del chat**:
+  incluyen la huella del cifrado de cada lado y nadie sin la llave puede
+  cambiarlas, así que nadie (ni Google) puede ponerse en medio. En pantalla
+  sale un **código de 8 cifras**: si los dos ven el mismo, la llamada va
+  directo entre ustedes.
+- **Sin registro:** al colgar se borran la oferta y las señales. No se
+  guarda historial de llamadas en la base de datos ni en el chat. Si las dos
+  webs se cierran de golpe a media llamada, los restos se borran solos la
+  próxima vez que alguno abra la web (sin contestar: a los 2 min; sin
+  actividad: a los 10 min).
+- **Cómo suena:** si el otro tiene la web abierta, suena dentro de la web. Si
+  la tiene cerrada y activó las notificaciones push, le llega "Llamada
+  entrante" (suena aunque el chat esté silenciado). Al tocarla se abre la web
+  y puede contestar mientras siga sonando (45 s).
+- **iPhone:** Safari corta el micrófono y el audio si bloqueas la pantalla o
+  cambias de app; la web mantiene la pantalla encendida durante la llamada.
+  Para llamadas largas con el teléfono en el bolsillo, usa una app nativa
+  (Signal o SimpleX).
+- **Relevo (TURN), opcional:** algunas redes móviles o de oficina no dejan la
+  conexión directa. Para esas, configura un relevo en Vercel → Settings →
+  Environment Variables y haz Redeploy:
+  - Cloudflare (1 000 GB gratis al mes): en el panel de Cloudflare →
+    Realtime → TURN Server → crea una llave y copia `CF_TURN_KEY_ID` y
+    `CF_TURN_API_TOKEN`.
+  - u otro servidor: `TURN_URLS` (separadas por comas), `TURN_USERNAME` y
+    `TURN_CREDENTIAL`.
+  El relevo solo reenvía paquetes cifrados: no puede escuchar. Con relevo
+  configurado puedes activar "Llamadas solo por relevo" para que el otro no
+  vea tu IP.
 
 ## Qué protege y qué no
 
@@ -98,6 +148,15 @@ No protege contra:
   compartida.
 - **Quitar a alguien de un chat** le cierra el acceso por las reglas, pero la
   llave de ese chat no cambia: lo que ya pudo leer, ya lo leyó.
+- **Eliminar no borra lo que otros ya guardaron:** una captura de pantalla,
+  un archivo descargado o la cita de ese mensaje dentro de una respuesta.
+  Qué mensajes están destacados se ve en la base (no su texto).
+- **Llamadas:** mientras dura una llamada, la base guarda quién llama a quién
+  y desde cuándo (se borra al colgar). En una llamada directa, cada teléfono
+  ve la dirección IP del otro (con "solo por relevo", no). El servidor STUN
+  (Cloudflare) y, si lo usas, el relevo ven direcciones IP, nunca el audio.
+- **En línea:** mientras está encendido, la base guarda la hora de tu última
+  conexión en cada chat.
 - **Notificaciones:** la función de Vercel ve el id del chat y quién lo
   envió (nunca el texto). Apple o Google ven cuándo llega un aviso.
 - **Cambios al código de la web:** quien controle tu cuenta de GitHub o de
@@ -120,7 +179,11 @@ Firestore en el plan Spark incluye 1 GiB guardado, 10 GiB de descarga al mes,
 50 000 lecturas y 20 000 escrituras al día. Si se supera un límite, Firebase
 deja de responder hasta el día (o mes) siguiente; no cobra nada. Para 3 o 4
 personas sobra; lo que más gasta son los archivos grandes y los videos
-(máximo 10 MB cada uno).
+(máximo 10 MB cada uno). El "en línea" escribe cada 90 s en cada chat
+mientras la web está a la vista (unas 40 escrituras por hora por chat); con
+pocos chats no se nota. Vaciar un chat cuenta una escritura por cada mensaje,
+reacción y trozo de archivo borrado. Las llamadas no gastan Firestore
+mientras duran (el audio va directo).
 
 Vercel Hobby incluye de sobra las llamadas de la función de notificaciones.
 Ojo: el plan Hobby es para uso personal no comercial.
@@ -195,6 +258,17 @@ nuevo.
    aparecer en "Esperando aprobación": compara su código y apruébalo otra
    vez.
 
+## Actualizar desde la versión 7 (llamadas, en línea, destacar y eliminar)
+
+1. **Reglas:** abre el `firestore.rules` nuevo, copia en `founders()`,
+   `admins()` y `others()` los mismos UID que tienes publicados y pega el
+   archivo en Firebase → Reglas → **Publicar**. Sin este paso no funcionan ni
+   las llamadas ni el "en línea" ni eliminar.
+2. **Código:** sube el contenido del paquete a GitHub (tu
+   `src/lib/firebase-config.ts` no viene en el paquete, así que se conserva)
+   y espera a que Vercel diga **Ready**.
+3. Opcional: el relevo TURN (sección Llamadas).
+
 ## Instalación desde cero
 
 ### Firebase
@@ -247,3 +321,10 @@ nuevo.
   formato (HEIC); se envía como archivo descargable.
 - **El build de Vercel falla por la versión de Node**: Settings → Build and
   Deployment → Node.js Version → 22.x.
+- **No aparecen los botones de llamada**: solo salen en chats de dos
+  personas, y el navegador debe permitir micrófono (en iPhone, Safari o la
+  web desde la pantalla de inicio).
+- **La llamada se queda en "Conectando…"**: la red no deja la conexión
+  directa; configura el relevo TURN (sección Llamadas).
+- **"Sin permiso para el micrófono"**: dale permiso al sitio en los ajustes
+  del navegador (en iPhone: Ajustes → Safari → Micrófono).
