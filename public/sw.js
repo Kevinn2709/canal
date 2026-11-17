@@ -1,77 +1,33 @@
 /*
  * sw.js — Service worker: muestra las notificaciones push y, al tocarlas,
- * abre el chat.
+ * abre la app en ese chat.
  *
- * El aviso no trae el texto del mensaje (sigue cifrado de extremo a
- * extremo): solo el id del chat, quién escribió y si te mencionaron. Si en
- * Configuración activaste "Mostrar el nombre del chat", los nombres salen de
- * una lista guardada en este dispositivo; si no, dice solo "Nuevo mensaje"
- * (o "Llamada entrante").
+ * Las push solo las reciben los administradores (fundadores y admins).
+ * El aviso es siempre neutro, porque puede verse con la pantalla bloqueada:
+ * nunca lleva el texto del mensaje, ni el nombre del chat, ni quién escribió.
+ * Solo dice "Nuevo mensaje" (o "Llamada entrante"). El id del chat viaja
+ * dentro del aviso cifrado de Web Push y solo sirve para abrir ese chat.
  *
  * No guarda la app en caché: siempre se carga la versión más reciente.
  */
 
 const APP_NAME = "Chat";
+const ICON = "/notification-icon.png";
+const BADGE = "/badge-96.png";
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
-function readNames() {
-  return new Promise((resolve) => {
-    try {
-      const req = indexedDB.open("canal", 2);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains("keys")) db.createObjectStore("keys");
-        if (!db.objectStoreNames.contains("notif")) db.createObjectStore("notif");
-      };
-      req.onerror = () => resolve(null);
-      req.onsuccess = () => {
-        const db = req.result;
-        try {
-          const get = db.transaction("notif", "readonly").objectStore("notif").get("names");
-          get.onsuccess = () => {
-            db.close();
-            resolve(get.result || null);
-          };
-          get.onerror = () => {
-            db.close();
-            resolve(null);
-          };
-        } catch (e) {
-          db.close();
-          resolve(null);
-        }
-      };
-    } catch (e) {
-      resolve(null);
-    }
-  });
-}
-
-async function buildNotification(data) {
+function buildNotification(data) {
   if (data.t) {
     return { title: APP_NAME, body: "Las notificaciones funcionan en este dispositivo.", tag: "prueba", chatId: "" };
   }
   const chatId = typeof data.c === "string" ? data.c : "";
-  const names = await readNames();
-  const chatName = names && names.chats && names.chats[chatId];
-  const person = names && names.people && typeof data.f === "string" && names.people[data.f];
   if (data.k) {
     // Llamada entrante: se queda a la vista hasta que la toques.
-    return {
-      title: chatName || "Llamada",
-      body: person ? `${person} te está llamando` : "Llamada entrante",
-      tag: `call-${chatId}`,
-      chatId,
-      call: true,
-    };
+    return { title: APP_NAME, body: "Llamada entrante", tag: `call-${chatId}`, chatId, call: true };
   }
-  const title = chatName || APP_NAME;
-  let body;
-  if (data.m) body = person ? `${person} te mencionó` : "Te mencionaron";
-  else body = person ? `${person}: nuevo mensaje` : "Nuevo mensaje";
-  return { title, body, tag: chatId ? `c-${chatId}` : "canal", chatId };
+  return { title: APP_NAME, body: "Nuevo mensaje", tag: chatId ? `c-${chatId}` : "canal", chatId };
 }
 
 self.addEventListener("push", (event) => {
@@ -83,15 +39,15 @@ self.addEventListener("push", (event) => {
   }
   event.waitUntil(
     (async () => {
-      const n = await buildNotification(data);
+      const n = buildNotification(data);
       await self.registration.showNotification(n.title, {
         body: n.body,
         tag: n.tag,
         renotify: true,
         requireInteraction: !!n.call,
         vibrate: n.call ? [400, 200, 400, 200, 400] : undefined,
-        icon: "/icon-192.png",
-        badge: "/badge-96.png",
+        icon: ICON,
+        badge: BADGE,
         data: { chatId: n.chatId },
       });
       // Si ya tienes ese chat abierto y a la vista, no hace falta el aviso.
@@ -110,6 +66,7 @@ self.addEventListener("push", (event) => {
   );
 });
 
+// Al tocar el aviso: se cierra y se abre la app (la PWA) en ese chat.
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const chatId = (event.notification.data && event.notification.data.chatId) || "";

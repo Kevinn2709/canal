@@ -10,10 +10,15 @@
  *   el token de quien envía el mensaje, así que las reglas de Firestore
  *   aplican igual que en la app: si no es miembro del chat, no puede avisar.
  * - El aviso no lleva el texto del mensaje (sigue cifrado de extremo a
- *   extremo): solo el id del chat, quién escribió y si te mencionaron.
+ *   extremo), ni quién escribió: solo el id del chat (para abrirlo) y si es
+ *   una llamada. El teléfono muestra "Nuevo mensaje".
+ * - Solo los administradores (fundadores y admins) reciben push: las reglas
+ *   de Firestore no dejan que un miembro guarde suscripciones y, si está
+ *   configurada PUSH_UIDS, solo se avisa a esos uid.
  *
  * Variables de entorno en Vercel: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY y,
- * opcional, VAPID_SUBJECT (un correo "mailto:…" o la URL del sitio).
+ * opcional, VAPID_SUBJECT (un correo "mailto:…" o la URL del sitio) y
+ * PUSH_UIDS (uid de fundadores y admins separados por comas).
  */
 
 import { firebaseConfig } from "@/lib/firebase-config";
@@ -32,6 +37,14 @@ function json(data: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
+}
+
+/** uid que pueden recibir push (fundadores y admins), o null si no se configuró. */
+function pushAllowList(): Set<string> | null {
+  const raw = process.env.PUSH_UIDS?.trim();
+  if (!raw) return null;
+  const list = raw.split(",").map((x) => x.trim()).filter(Boolean);
+  return list.length ? new Set(list) : null;
 }
 
 function vapidConfig(origin: string): Vapid | null {
@@ -209,6 +222,8 @@ export async function POST(req: Request): Promise<Response> {
     return json({ error: (err as Error).message === "denied" ? "denied" : "firestore" }, (err as Error).message === "denied" ? 403 : 502);
   }
 
+  const allowed = pushAllowList();
+  if (allowed) recipients = recipients.filter((uid) => allowed.has(uid));
   if (recipients.length === 0) return json({ ok: true, sent: 0 });
 
   let pushDocs: Map<string, Record<string, unknown>>;
@@ -227,9 +242,8 @@ export async function POST(req: Request): Promise<Response> {
     const mentioned = mentions.has(uid);
     const muted = Array.isArray(data?.muted) && (data?.muted as unknown[]).includes(chatId);
     if (muted && !mentioned && !test && !call) continue; // chat silenciado (salvo que te mencionen)
-    const payload = JSON.stringify(
-      test ? { c: "", t: 1 } : call ? { c: chatId, f: me, k: 1 } : { c: chatId, f: me, m: mentioned ? 1 : 0 }
-    );
+    // Sin remitente ni menciones: el aviso es neutro.
+    const payload = JSON.stringify(test ? { c: "", t: 1 } : call ? { c: chatId, k: 1 } : { c: chatId });
     for (const target of subscriptionsOf(data)) {
       jobs.push(
         // Una llamada solo sirve unos segundos: si el teléfono no la recibe a

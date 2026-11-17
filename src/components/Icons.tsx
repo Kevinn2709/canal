@@ -300,3 +300,59 @@ export function StarIcon({ className, filled }: IconProps & { filled?: boolean }
     </svg>
   );
 }
+
+export function ClockIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="12" cy="12" r="8" />
+      <path d="M12 8v4.5l3 1.8" />
+    </Svg>
+  );
+}
+
+/** Dos palomitas (leído). */
+export function CheckCheckIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M2.5 12.5l4.5 4.5 8.5-9.5M10.5 15.5l1.5 1.5 9-10" />
+    </Svg>
+  );
+}
+
+export function EyeOffIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M3 3l18 18M10.6 5.1A10 10 0 0112 5c5 0 9 4.5 10 7-.4 1-1.2 2.3-2.4 3.5M6.3 6.3C4.2 7.7 2.7 9.8 2 12c1 2.5 5 7 10 7 1.9 0 3.6-.6 5-1.5" />
+      <path d="M9.9 9.9a3 3 0 004.2 4.2" />
+    </Svg>
+  );
+}
+
+/** "1" dentro de un círculo (ver una vez). */
+export function OnceIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="12" cy="12" r="9" strokeDasharray="3 2.2" />
+      <path d="M10.5 9l2-1.5V16.5" />
+    </Svg>
+  );
+}
+
+export function ArchiveIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <rect x="3" y="4" width="18" height="4" rx="1" />
+      <path d="M5 8v11a1 1 0 001 1h12a1 1 0 001-1V8M10 12h4" />
+    </Svg>
+  );
+}
+
+export function ImageIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <circle cx="9" cy="10" r="1.8" />
+      <path d="M21 16l-5-5-9 9" />
+    </Svg>
+  );
+}

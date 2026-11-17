@@ -78,21 +78,21 @@ export function PersonAvatar({
   );
 }
 
-/** Chat privado: la foto del otro (con su "en línea"). Grupo: ícono de grupo. */
+/**
+ * Foto de un chat: la que puso un administrador, si hay. Si no: en un chat de
+ * dos, la foto del otro (con su "en línea"); en un grupo, el ícono de grupo.
+ */
 export function ChatAvatar({ ws, chat, myUid, size = 44 }: { ws: Workspace; chat: ChatInfo; myUid: string; size?: number }) {
   const others = chat.members.filter((m) => m !== myUid);
-  if (others.length === 1 && !chat.rawName) return <PersonAvatar ws={ws} uid={others[0]} size={size} dot />;
-  if (others.length === 1) {
-    const p = ws.profiles.get(others[0]);
-    if (p?.photo && ws.avatars.get(others[0])) return <PersonAvatar ws={ws} uid={others[0]} size={size} dot />;
-  }
-  if (others.length === 1) {
+  const photo = ws.chatPhotos.get(chat.id);
+  if (photo) {
     return (
-      <WithDot on={ws.isOnline(others[0])} size={size}>
-        <Avatar name={chat.name} color="#a3a3a3" size={size} />
+      <WithDot on={others.length === 1 && ws.isOnline(others[0])} size={size}>
+        <Avatar name={chat.name} color="#a3a3a3" url={photo} size={size} />
       </WithDot>
     );
   }
+  if (others.length === 1) return <PersonAvatar ws={ws} uid={others[0]} size={size} dot />;
   if (others.length === 0) {
     return <Avatar name={chat.name} color="#a3a3a3" size={size} />;
   }

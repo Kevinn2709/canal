@@ -84,6 +84,13 @@ service cloud.firestore {
           && !existsAfter(/databases/$(database)/documents/chats/$(chatId)/messages/$(msgId)));
     }
 
+    // ¿Se puede escribir en este chat? Si un administrador activó "solo
+    // administradores pueden escribir" (locked), solo ellos.
+    function chatOpen(chatId) {
+      return isAdmin()
+        || get(/databases/$(database)/documents/chats/$(chatId)).data.get('locked', false) != true;
+    }
+
     // Destacar o quitar el destacado: solo cambia el campo "star".
     function validStar() {
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['star'])
@@ -243,7 +250,9 @@ service cloud.firestore {
 
     // Suscripciones push de cada quien y chats silenciados. La función de
     // avisos las lee una por una con el permiso de quien envía; nadie puede
-    // listarlas. Solo el dueño las cambia.
+    // listarlas. Solo el dueño las cambia. Solo los administradores
+    // (fundadores y admins) pueden guardar suscripciones: un miembro solo
+    // guarda sus chats silenciados (con subs vacío).
     match /push/{userId} {
       allow get: if isMember();
       allow list: if false;
@@ -252,19 +261,24 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['subs', 'muted'])
         && request.resource.data.subs is map
         && request.resource.data.subs.size() <= 20
+        && (request.resource.data.subs.size() == 0 || isAdmin())
         && request.resource.data.muted is list
         && request.resource.data.muted.size() <= 200;
       allow delete: if false;
     }
 
-    // Chats fijados de cada quien. Privado.
+    // Chats fijados y alias (cifrados) de cada quien. Privado.
     match /prefs/{userId} {
       allow read: if isMember() && request.auth.uid == userId;
       allow create, update: if isMember()
         && request.auth.uid == userId
-        && request.resource.data.keys().hasOnly(['pinned', 'updatedAt'])
-        && request.resource.data.pinned is list
-        && request.resource.data.pinned.size() <= 50
+        && request.resource.data.keys().hasOnly(['pinned', 'updatedAt', 'aliasIv', 'aliasCt'])
+        && (!('pinned' in request.resource.data)
+            || (request.resource.data.pinned is list && request.resource.data.pinned.size() <= 50))
+        && (!('aliasIv' in request.resource.data)
+            || (request.resource.data.aliasIv is string && request.resource.data.aliasIv.size() == 16))
+        && (!('aliasCt' in request.resource.data)
+            || (request.resource.data.aliasCt is string && request.resource.data.aliasCt.size() <= 20000))
         && request.resource.data.updatedAt == request.time;
       allow delete: if false;
     }
@@ -384,6 +398,8 @@ service cloud.firestore {
           && request.resource.data.metaCt.size() <= 2000)
         // Archivar o desarchivar.
         || (isAdmin() && changed().hasOnly(['archived']) && request.resource.data.archived is bool)
+        // Solo administradores pueden escribir (o todos).
+        || (isAdmin() && changed().hasOnly(['locked']) && request.resource.data.locked is bool)
         // Agregar o quitar miembros (solo en las conversaciones nuevas).
         || (isAdmin() && changed().hasOnly(['members'])
           && ('members' in resource.data)
@@ -421,7 +437,7 @@ service cloud.firestore {
       // envió o un fundador (también al vaciar el chat).
       match /messages/{messageId} {
         allow read: if canUseChat(chatId);
-        allow create: if canUseChat(chatId) && validMessage();
+        allow create: if canUseChat(chatId) && validMessage() && chatOpen(chatId);
         allow update: if canUseChat(chatId) && validStar();
         allow delete: if canUseChat(chatId)
           && (resource == null || resource.data.uid == request.auth.uid || isAdmin());
@@ -448,13 +464,15 @@ service cloud.firestore {
               || msgGone(chatId, resource.data.msg));
       }
 
-      // "escribiendo…": solo la hora (o null). Cada quien solo el suyo.
+      // "escribiendo…" / "grabando audio…" / "enviando archivo…" (solo si no
+      // hay Realtime Database): la hora (o null) y el tipo. Cada quien el suyo.
       match /typing/{userId} {
         allow read: if canUseChat(chatId);
         allow create, update: if canUseChat(chatId)
           && request.auth.uid == userId
-          && request.resource.data.keys().hasOnly(['at'])
-          && (request.resource.data.at == null || request.resource.data.at == request.time);
+          && request.resource.data.keys().hasOnly(['at', 'k'])
+          && (request.resource.data.at == null || request.resource.data.at == request.time)
+          && (!('k' in request.resource.data) || request.resource.data.k in ['text', 'voice', 'file']);
         allow delete: if false;
       }
 
@@ -528,16 +546,49 @@ service cloud.firestore {
         allow delete: if false;
       }
 
-      // Hasta dónde leyó cada quien (para "visto"). Cada quien solo el suyo.
+      // Hasta dónde leyó cada quien (palomitas): cuántos mensajes, cuándo y
+      // el id del último que vio (last). Cada quien solo el suyo.
       match /reads/{userId} {
         allow read: if canUseChat(chatId);
         allow create, update: if canUseChat(chatId)
           && request.auth.uid == userId
-          && request.resource.data.keys().hasOnly(['n', 'at'])
+          && request.resource.data.keys().hasOnly(['n', 'at', 'last'])
           && request.resource.data.n is int
           && request.resource.data.n >= 0
-          && request.resource.data.at == request.time;
+          && request.resource.data.at == request.time
+          && (!('last' in request.resource.data)
+              || (request.resource.data.last is string && request.resource.data.last.size() <= 64));
         allow delete: if false;
+      }
+
+      // Foto del chat, cifrada con la llave del chat. Solo administradores.
+      match /photo/{photoId} {
+        allow read: if canUseChat(chatId);
+        allow create, update: if isAdmin() && canUseChat(chatId)
+          && photoId == 'current'
+          && request.resource.data.keys().hasOnly(['iv', 'data', 'by', 'at'])
+          && request.resource.data.iv is string
+          && request.resource.data.iv.size() == 16
+          && request.resource.data.data is bytes
+          && request.resource.data.data.size() <= 300000
+          && request.resource.data.by == request.auth.uid
+          && request.resource.data.at == request.time;
+        allow delete: if isAdmin() && canUseChat(chatId);
+      }
+
+      // Fotos y videos de una vista: quién ya los abrió ({mensaje}_{uid}).
+      // Cada quien solo el suyo. Se borran con su mensaje.
+      match /opened/{openId} {
+        allow read: if canUseChat(chatId);
+        allow create: if canUseChat(chatId)
+          && request.resource.data.keys().hasOnly(['msg', 'uid', 'at'])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.msg is string
+          && openId == request.resource.data.msg + '_' + request.auth.uid
+          && request.resource.data.at == request.time;
+        allow update: if false;
+        allow delete: if canUseChat(chatId)
+          && (isAdmin() || msgGone(chatId, resource.data.msg));
       }
 
       // Pendientes de las conversaciones nuevas.
@@ -552,7 +603,7 @@ service cloud.firestore {
       // Se borran con su mensaje: quien los subió o un fundador.
       match /files/{fileId}/chunks/{chunkId} {
         allow read: if canUseChat(chatId);
-        allow create: if canUseChat(chatId) && validChunk();
+        allow create: if canUseChat(chatId) && validChunk() && chatOpen(chatId);
         allow update: if false;
         allow delete: if canUseChat(chatId)
           && (resource == null || resource.data.uid == request.auth.uid || isAdmin());

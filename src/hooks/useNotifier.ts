@@ -6,7 +6,7 @@
  *   (y sonido), si lo tienes activado en Configuración.
  * - Si la web está abierta pero en segundo plano: aviso del sistema, si lo
  *   activaste y este dispositivo no tiene ya las notificaciones push (para
- *   no avisar dos veces). Como las push, no incluye el texto del mensaje.
+ *   no avisar dos veces). Como las push, es neutro: "Nuevo mensaje".
  * Los chats silenciados no avisan, salvo que te mencionen.
  */
 
@@ -66,12 +66,9 @@ export function useNotifier(args: {
         if (toastTimer.current) window.clearTimeout(toastTimer.current);
         toastTimer.current = window.setTimeout(() => setToast((t) => (t && t.id === id ? null : t)), TOAST_MS);
       } else if (settings.system && !pushOn) {
-        // Igual que las push: sin el texto del mensaje (se ve en la pantalla bloqueada).
-        const title = settings.names ? chat.name : "Chat";
-        const short = mention
-          ? settings.names ? `${sender} te mencionó` : "Te mencionaron"
-          : settings.names ? `${sender}: nuevo mensaje` : "Nuevo mensaje";
-        void showSystemNotification(title, short, chat.id);
+        // Igual que las push: aviso neutro, sin texto ni nombres (se ve en la
+        // pantalla bloqueada).
+        void showSystemNotification("Chat", "Nuevo mensaje", chat.id);
       }
     },
     [viewing, ws, settings, pushOn]

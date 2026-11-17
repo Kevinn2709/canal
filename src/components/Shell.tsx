@@ -20,7 +20,14 @@ import { getFirebase } from "@/lib/firebase";
 import { createChat, renameChat, type ChatInfo, type ChatMeta, type KeyTarget } from "@/lib/chats";
 import { clearFileCache } from "@/lib/files";
 import { clearKeys, saveNotificationNames } from "@/lib/keystore";
-import { loadSettings, onSettingsChange, refreshPush, registerServiceWorker, type DeviceSettings } from "@/lib/push";
+import {
+  dropPushIfNotAllowed,
+  loadSettings,
+  onSettingsChange,
+  refreshPush,
+  registerServiceWorker,
+  type DeviceSettings,
+} from "@/lib/push";
 import { migrateLegacyStickers } from "@/lib/stickers";
 import { unlockAudio } from "@/lib/sound";
 import type { Session } from "@/lib/session";
@@ -89,17 +96,23 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
     }
   }, []);
 
-  // Service worker (avisos) y push de este dispositivo.
+  // Service worker (avisos) y push de este dispositivo. El push es solo para
+  // administradores (fundadores y admins); a un miembro se le desactiva.
   useEffect(() => {
     void registerServiceWorker();
-    void refreshPush(getFirebase().db, session.uid).then(setPushOn).catch(() => undefined);
+    if (session.admin) {
+      void refreshPush(getFirebase().db, session.uid).then(setPushOn).catch(() => undefined);
+    } else {
+      setPushOn(false);
+      void dropPushIfNotAllowed(getFirebase().db, session.uid).catch(() => undefined);
+    }
     const onMessage = (e: MessageEvent) => {
       const d = e.data as { type?: string; chatId?: string } | null;
       if (d?.type === "open-chat" && d.chatId) select(d.chatId);
     };
     navigator.serviceWorker?.addEventListener("message", onMessage);
     return () => navigator.serviceWorker?.removeEventListener("message", onMessage);
-  }, [session.uid, select]);
+  }, [session.uid, session.admin, select]);
 
   // El navegador solo deja sonar audio después del primer toque.
   useEffect(() => {
@@ -161,18 +174,11 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
     }
   }, [totalUnread]);
 
-  // Nombres para las notificaciones push (solo si lo activaste).
-  const namesKey = settings.names
-    ? JSON.stringify([ws.chats.map((c) => [c.id, c.name]), [...ws.profiles.values()].map((p) => [p.uid, p.name])])
-    : "";
+  // Las notificaciones ya no muestran nombres: se borran los que hubiera
+  // guardado una versión anterior en este dispositivo.
   useEffect(() => {
-    if (!namesKey) {
-      void saveNotificationNames(null);
-      return;
-    }
-    const [chats, people] = JSON.parse(namesKey) as [[string, string][], [string, string][]];
-    void saveNotificationNames({ chats: Object.fromEntries(chats), people: Object.fromEntries(people) });
-  }, [namesKey]);
+    void saveNotificationNames(null);
+  }, []);
 
   const logout = async () => {
     clearFileCache();

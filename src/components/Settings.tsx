@@ -42,6 +42,7 @@ import {
   type DeviceSettings,
 } from "@/lib/push";
 import { generateVapidKeys } from "@/lib/webpush";
+import { APP_VERSION } from "@/lib/version";
 import type { Profile } from "@/lib/members";
 import type { Workspace } from "@/hooks/useWorkspace";
 import { PersonAvatar } from "./Avatar";
@@ -206,7 +207,7 @@ function PushControls({
               className="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-neutral-950 disabled:opacity-40"
               onClick={() =>
                 void run(async () => {
-                  await enablePush(getFirebase().db, session.uid);
+                  await enablePush(getFirebase().db, session.uid, session.admin);
                   onPushChange(true);
                   setMessage("Listo. Usa «Enviar prueba» para comprobarlo.");
                 })
@@ -594,18 +595,16 @@ export function Settings({
               onChange={(v) => void toggleSystem(v)}
             />
             {permError && <p className="text-xs text-red-400">{permError}</p>}
-            <div className="border-t border-neutral-900 pt-4">
-              <PushControls session={session} user={user} pushOn={pushOn} onPushChange={onPushChange} />
-            </div>
-            <Toggle
-              label="Mostrar de qué chat y de quién es"
-              hint="Si está apagado, las notificaciones dicen solo «Nuevo mensaje». Si lo enciendes, los nombres se guardan en este dispositivo para poder mostrarlos."
-              checked={settings.names}
-              onChange={(v) => set({ names: v })}
-            />
+            {ws.admin && (
+              <div className="border-t border-neutral-900 pt-4">
+                <PushControls session={session} user={user} pushOn={pushOn} onPushChange={onPushChange} />
+              </div>
+            )}
             <p className="text-xs text-neutral-500">
-              Las notificaciones nunca incluyen el texto del mensaje. Los chats silenciados no avisan, salvo que te
-              mencionen.
+              Las notificaciones son neutras: dicen solo «Nuevo mensaje», sin texto, sin nombre del chat y sin quién
+              escribió, porque pueden verse con la pantalla bloqueada. Al tocarlas se abre el chat. Los chats
+              silenciados no avisan, salvo que te mencionen.
+              {ws.admin ? " Las notificaciones con la web cerrada son solo para fundadores y administradores." : ""}
             </p>
           </Section>
 
@@ -621,6 +620,12 @@ export function Settings({
               hint="Solo lo ven quienes comparten un chat contigo. Si lo apagas, tampoco se guarda la hora."
               checked={settings.showOnline}
               onChange={(v) => set({ showOnline: v })}
+            />
+            <Toggle
+              label="Ocultar la pantalla al salir de la app"
+              hint="Desenfoca todo cuando cambias de app, bloqueas el teléfono o la ventana pierde el foco, para que no se vea en el selector de apps."
+              checked={settings.shield}
+              onChange={(v) => set({ shield: v })}
             />
             <Toggle
               label="Llamadas solo por relevo (ocultar mi IP)"
@@ -651,6 +656,7 @@ export function Settings({
           >
             Cerrar sesión ({user.email})
           </button>
+          <p className="text-center text-[11px] text-neutral-600">Versión {APP_VERSION}</p>
         </div>
       </div>
     </div>

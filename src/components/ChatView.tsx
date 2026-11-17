@@ -5,19 +5,35 @@
  *
  * - Mensajes en vivo, descifrados en el dispositivo con la llave del chat.
  * - Texto, fotos, archivos, notas de voz y stickers; responder citando,
- *   reaccionar y mencionar (@nombre); "escribiendo…" con quién; "visto" (en
- *   grupos, "visto por…").
+ *   reaccionar y mencionar (@nombre); "Escribiendo…", "Grabando audio…" y
+ *   "Enviando archivo…" con quién.
+ * - Palomitas: reloj al enviar, una al guardarse en el servidor, dos (azules)
+ *   hasta el último mensaje que el otro vio (marca de agua: lastReadMessageId).
+ *   Los mensajes posteriores siguen con una hasta que vuelva a enfocar el chat.
+ * - Texto oculto y fotos/videos de una vista.
+ * - Gestos: deslizar hacia abajo en los mensajes cierra el teclado; deslizar
+ *   un mensaje a la derecha lo responde; doble toque reacciona con 👍.
  * - Al enviar: se actualiza la vista previa cifrada de la lista, el contador
  *   de no leídos y se avisa (push) a los demás miembros.
  * - Pendientes, destacados e información del chat en paneles laterales.
  * - Destacar (cualquiera), eliminar para todos (quien lo envió o un
  *   fundador) y vaciar el chat menos los destacados (solo fundadores).
- * - En chats de dos: "en línea" y botones de llamada y videollamada.
+ * - En chats de dos: "En línea" / "Desconectado" y botones de llamada y
+ *   videollamada.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type DragEvent,
+  type TouchEvent as ReactTouchEvent,
+} from "react";
 import type { User } from "firebase/auth";
 import {
+  collection,
   doc,
   increment,
   limitToLast,
@@ -29,9 +45,10 @@ import {
   type Firestore,
   type Timestamp,
 } from "firebase/firestore";
-import { getFirebase } from "@/lib/firebase";
+import { getFirebase, getRtdb } from "@/lib/firebase";
 import { decryptText, encryptText } from "@/lib/crypto";
 import {
+  canViewOnce,
   encryptLast,
   setChatArchived,
   mentionsOf,
@@ -53,22 +70,24 @@ import {
   type FileStore,
   type PreparedFile,
 } from "@/lib/files";
-import { setReaction } from "@/lib/reactions";
-import { clearChat, deleteMessage, setStar, type StoredMessage } from "@/lib/messages";
+import { REACTION_EMOJIS, setReaction } from "@/lib/reactions";
+import { clearChat, deleteFileChunks, deleteMessage, setStar, type StoredMessage } from "@/lib/messages";
+import { markOpened, wasOpenedHere } from "@/lib/viewonce";
 import { createTask, MAX_TASK_LENGTH, type Task } from "@/lib/tasks";
 import { notifyChat } from "@/lib/push";
 import { dayKey, dayLabel, formatTime } from "@/lib/format";
 import type { Session } from "@/lib/session";
 import { useReactions } from "@/hooks/useReactions";
-import { useTyping } from "@/hooks/useTyping";
+import { activityLabel, useActivity, type Activity } from "@/hooks/useActivity";
 import type { Workspace } from "@/hooks/useWorkspace";
 import { extensionFor, type Recording } from "@/hooks/useVoiceRecorder";
 import { Lightbox } from "./Attachments";
 import { ChatAvatar } from "./Avatar";
 import { ChatInfoPanel } from "./ChatInfoPanel";
-import { Composer, MAX_LENGTH, type PendingAttachment } from "./Composer";
+import { Composer, MAX_LENGTH, type PendingAttachment, type SendOptions } from "./Composer";
 import { MessageActions } from "./MessageActions";
-import { MessageItem, type ChatMessage } from "./MessageItem";
+import { MessageItem, type ChatMessage, type Tick } from "./MessageItem";
+import { ViewOnceViewer } from "./ViewOnce";
 import { TasksPanel } from "./Tasks";
 import { StarredPanel } from "./StarredPanel";
 import { BackIcon, BellOffIcon, FileIcon, MicIcon, MoreIcon, PhoneIcon, TasksIcon, VideoIcon } from "./Icons";
@@ -173,10 +192,14 @@ function ChatRoom({
   const [panel, setPanel] = useState<"tasks" | "info" | "starred" | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState<string | null>(null);
+  const [onceViewer, setOnceViewer] = useState<ChatMessage | null>(null);
+  const [opened, setOpened] = useState<Map<string, Set<string>>>(new Map()); // mensaje -> quiénes lo abrieron
 
   const reactions = useReactions(chat.id, cryptoKey);
-  const { typing, setTyping } = useTyping(chat.id, user.uid);
-  const otherTyping = typing.length > 0;
+  // Con RTDB (y la copia de miembros lista), "escribiendo…" va por ahí; si no, por Firestore.
+  const rtdb = ws.rtdbChats.has(chat.id) ? getRtdb() : null;
+  const { active, setActivity } = useActivity(chat.id, user.uid, rtdb);
+  const otherTyping = active.length > 0;
   const fileStore: FileStore = chatFileStore(chat, cryptoKey);
   const libStore: FileStore | null = session.ws ? libraryFileStore(session.ws) : null;
   const group = chat.members.length > 2;
@@ -261,17 +284,62 @@ function ChatRoom({
     );
   }, [chat.id, limit, cryptoKey]);
 
-  // ---------- Marcar como leído cuando está abierta y visible ----------
+  // ---------- Fotos y videos de una vista: quién ya los abrió ----------
+  useEffect(() => {
+    const { db } = getFirebase();
+    return onSnapshot(
+      collection(db, "chats", chat.id, "opened"),
+      (snap) => {
+        const m = new Map<string, Set<string>>();
+        for (const d of snap.docs) {
+          const data = d.data();
+          if (typeof data.msg !== "string" || typeof data.uid !== "string") continue;
+          if (!m.has(data.msg)) m.set(data.msg, new Set());
+          m.get(data.msg)?.add(data.uid);
+        }
+        setOpened(m);
+      },
+      () => undefined
+    );
+  }, [chat.id]);
+
+  // Cuando todos los demás abrieron tu foto o video de una vista, se borran
+  // sus trozos cifrados (el mensaje queda como "Abierta").
+  const cleaned = useRef(new Set<string>());
+  useEffect(() => {
+    const others = chat.members.filter((x) => x !== user.uid);
+    if (others.length === 0) return;
+    for (const m of messages) {
+      if (m.uid !== user.uid || m.payload?.t !== "file" || !m.payload.once || cleaned.current.has(m.id)) continue;
+      const who = opened.get(m.id);
+      if (!who || !others.every((o) => who.has(o))) continue;
+      cleaned.current.add(m.id);
+      void deleteFileChunks(getFirebase().db, chat, m.payload.file).catch(() => cleaned.current.delete(m.id));
+    }
+  }, [opened, messages, chat, user.uid]);
+
+  // ---------- Marcar como leído (marca de agua) con el chat a la vista y enfocado ----------
   const { markRead } = ws;
+  let lastSeenId = "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (!messages[i].pending) {
+      lastSeenId = messages[i].id;
+      break;
+    }
+  }
   useEffect(() => {
     if (!loaded) return;
     const maybeMark = () => {
-      if (document.visibilityState === "visible") markRead(chat);
+      if (document.visibilityState === "visible" && document.hasFocus()) markRead(chat, lastSeenId || undefined);
     };
     maybeMark();
     document.addEventListener("visibilitychange", maybeMark);
-    return () => document.removeEventListener("visibilitychange", maybeMark);
-  }, [loaded, chat, markRead, messages.length]);
+    window.addEventListener("focus", maybeMark);
+    return () => {
+      document.removeEventListener("visibilitychange", maybeMark);
+      window.removeEventListener("focus", maybeMark);
+    };
+  }, [loaded, chat, markRead, messages.length, lastSeenId]);
 
   // ---------- Scroll ----------
   useLayoutEffect(() => {
@@ -296,6 +364,20 @@ function ChatRoom({
     const el = listRef.current;
     if (!el) return;
     nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  };
+
+  // Deslizar hacia abajo sobre los mensajes cierra el teclado (como en las apps).
+  const touchY = useRef<number | null>(null);
+  const onListTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
+    touchY.current = e.touches[0]?.clientY ?? null;
+  };
+  const onListTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const start = touchY.current;
+    const y = e.touches[0]?.clientY;
+    if (start === null || y === undefined || y - start < 12) return;
+    touchY.current = null;
+    const el = document.activeElement;
+    if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) el.blur();
   };
 
   const loadMore = () => {
@@ -419,7 +501,7 @@ function ChatRoom({
     return re;
   };
 
-  const onSend = async (text: string): Promise<boolean> => {
+  const onSend = async (text: string, options: SendOptions): Promise<boolean> => {
     if (text.length > MAX_LENGTH) {
       setError(`Máximo ${MAX_LENGTH} caracteres por mensaje.`);
       return false;
@@ -429,13 +511,14 @@ function ChatRoom({
     const m = findMentions(text, chat.members, user.uid, ws.nameOf);
     setAttachments([]);
     setError(null);
-    setTyping(false);
+    setActivity(null);
     nearBottom.current = true;
     const { db } = getFirebase();
 
     const sendText = async (withReply?: ReplyRef) => {
       try {
-        const base: Payload = m.length ? { t: "text", text, m } : { t: "text", text };
+        let base: Payload = m.length ? { t: "text", text, m } : { t: "text", text };
+        if (options.spoiler && base.t === "text") base = { ...base, sp: true };
         const { committed } = await sendPayload(db, withReply ? { ...base, re: withReply } : base);
         await committed;
         return true;
@@ -452,7 +535,8 @@ function ChatRoom({
     for (const [i, a] of files.entries()) {
       const reHere = i === 0 ? re : undefined;
       await uploadAndSend(db, a.localId, a.prepared, a.previewUrl, (file) => {
-        const base: Payload = caption ? (m.length ? { t: "file", text: caption, file, m } : { t: "file", text: caption, file }) : { t: "file", file };
+        let base: Payload = caption ? (m.length ? { t: "file", text: caption, file, m } : { t: "file", text: caption, file }) : { t: "file", file };
+        if (options.once && base.t === "file" && canViewOnce(file)) base = { ...base, once: true };
         return reHere ? { ...base, re: reHere } : base;
       });
     }
@@ -493,6 +577,20 @@ function ChatRoom({
     );
   };
 
+  // "Enviando archivo…" mientras sube algo; si no, lo que diga la caja de texto.
+  const uploading = uploads.some((u) => !u.error);
+  const uploadingRef = useRef(false);
+  useEffect(() => {
+    uploadingRef.current = uploading;
+    setActivity(uploading ? "file" : null);
+  }, [uploading, setActivity]);
+  const onComposerActivity = useCallback(
+    (k: Activity | null) => {
+      if (!uploadingRef.current) setActivity(k);
+    },
+    [setActivity]
+  );
+
   const dismissUpload = (localId: string) => {
     setUploads((u) => {
       const item = u.find((x) => x.localId === localId);
@@ -512,13 +610,17 @@ function ChatRoom({
     );
   };
 
+  /** Doble toque: 👍 (o la quita si ya estaba). */
+  const quickReact = (m: ChatMessage) => toggleReaction(m, REACTION_EMOJIS[0]);
+
   const replyToMessage = (m: ChatMessage) => {
     setReplyTo({ id: m.id, uid: m.uid, preview: previewOf(m.payload) });
     setFocusSignal((n) => n + 1);
   };
 
   const copyMessage = (m: ChatMessage) => {
-    const text = m.payload?.t === "text" ? m.payload.text : m.payload?.t === "file" ? m.payload.text ?? "" : "";
+    const text =
+      m.payload?.t === "text" ? m.payload.text : m.payload?.t === "file" && !m.payload.once ? m.payload.text ?? "" : "";
     if (!text) return;
     navigator.clipboard
       ?.writeText(text)
@@ -580,7 +682,7 @@ function ChatRoom({
 
   const taskFromMessage = (m: ChatMessage) => {
     const text =
-      m.payload?.t === "text" ? m.payload.text.slice(0, MAX_TASK_LENGTH) : previewOf(m.payload);
+      m.payload?.t === "text" && !m.payload.sp ? m.payload.text.slice(0, MAX_TASK_LENGTH) : previewOf(m.payload);
     createTask(getFirebase().db, cryptoKey, user.uid, chat, text, m.id)
       .then(() => showNotice("Agregado a pendientes"))
       .catch((err) => setError(errorMessage(err)));
@@ -590,23 +692,49 @@ function ChatRoom({
   let lastMineId: string | null = null;
   for (const m of messages) if (m.uid === user.uid) lastMineId = m.id;
 
-  // Quién vio tu último mensaje.
+  // Palomitas: hasta qué mensaje leyó cada quien (marca de agua). Si su último
+  // mensaje visto no está entre los cargados, se compara por hora.
   const others = chat.members.filter((x) => x !== user.uid);
-  const seenStatus = (m: ChatMessage): { text: string; all: boolean } => {
-    if (m.pending) return { text: "enviando…", all: false };
-    const readers = others.filter((o) => {
+  const marks = ws.readMarks(chat.id);
+  const indexById = new Map<string, number>(messages.map((m, i): [string, number] => [m.id, i]));
+  const hasRead = (o: string, m: ChatMessage, i: number): boolean => {
+    if (chat.legacy) {
       const at = ws.profiles.get(o)?.lastRead[chat.id];
       return !!(at && m.createdAt && at >= m.createdAt);
-    });
-    if (readers.length === 0) return { text: "enviado", all: false };
-    if (!group) return { text: "visto", all: true };
-    if (readers.length === others.length) return { text: "visto por todos", all: true };
-    return { text: `visto por ${readers.length <= 2 ? readers.map(ws.nameOf).join(" y ") : readers.length}`, all: false };
+    }
+    const mark = marks.get(o);
+    if (!mark) return false;
+    const li = mark.last ? indexById.get(mark.last) : undefined;
+    if (li !== undefined) return i <= li;
+    return !!(mark.at && m.createdAt && mark.at >= m.createdAt);
+  };
+  const readersOf = (m: ChatMessage, i: number) => others.filter((o) => hasRead(o, m, i));
+  const tickOf = (m: ChatMessage, i: number): Tick => {
+    if (m.pending) return "pending";
+    if (others.length === 0) return "sent";
+    return readersOf(m, i).length === others.length ? "read" : "sent";
+  };
+  // En grupos, debajo de tu último mensaje: quién lo vio.
+  const groupSeen = (m: ChatMessage, i: number): string => {
+    if (!group || m.pending) return "";
+    const readers = readersOf(m, i);
+    if (readers.length === 0 || readers.length === others.length) return readers.length ? "visto por todos" : "";
+    return `visto por ${readers.length <= 2 ? readers.map(ws.nameOf).join(" y ") : readers.length}`;
+  };
+
+  // Fotos y videos de una vista.
+  const onceState = (m: ChatMessage) => {
+    if (m.payload?.t !== "file" || !m.payload.once) return null;
+    const who = opened.get(m.id) ?? new Set<string>();
+    return {
+      opened: m.uid === user.uid ? false : who.has(user.uid) || wasOpenedHere(m.id),
+      openedByAll: others.length > 0 && others.every((o) => who.has(o)),
+    };
   };
 
   let lastDay = "";
   let prevUid = "";
-  const rows = messages.map((m) => {
+  const rows = messages.map((m, i) => {
     const mine = m.uid === user.uid;
     let separator: string | null = null;
     if (m.createdAt) {
@@ -618,8 +746,8 @@ function ChatRoom({
     }
     const firstOfRun = separator !== null || prevUid !== m.uid;
     prevUid = m.uid;
-    const status = mine && m.id === lastMineId ? seenStatus(m) : null;
-    const footer = [m.createdAt ? formatTime(m.createdAt) : "", m.state === "legacy" ? "sin cifrar" : "", status?.text ?? ""]
+    const seen = mine && m.id === lastMineId ? groupSeen(m, i) : "";
+    const footer = [m.createdAt ? formatTime(m.createdAt) : "", m.state === "legacy" ? "sin cifrar" : "", seen]
       .filter(Boolean)
       .join(" · ");
     const isSticker = m.payload?.t === "sticker";
@@ -633,27 +761,24 @@ function ChatRoom({
         group={group || !chat.members.includes(m.uid)}
         firstOfRun={firstOfRun}
         footer={footer}
-        footerSeen={!!status?.all}
+        tick={mine ? tickOf(m, i) : null}
         separator={separator}
         reactions={reactions.get(m.id) ?? []}
         highlighted={highlight === m.id}
         store={isSticker && m.payload?.t === "sticker" && m.payload.lib ? libStore : fileStore}
+        once={onceState(m)}
         onOpenImage={(file, url) => setViewer({ file, url })}
         onActions={setActionFor}
         onToggleReaction={toggleReaction}
         onJump={jumpTo}
+        onReply={replyToMessage}
+        onQuickReact={quickReact}
+        onOpenOnce={setOnceViewer}
       />
     );
   });
 
-  const typingLabel =
-    typing.length === 0
-      ? ""
-      : !group
-        ? "escribiendo…"
-        : typing.length === 1
-          ? `${ws.nameOf(typing[0])} está escribiendo…`
-          : `${typing.map(ws.nameOf).join(" y ")} están escribiendo…`;
+  const typingLabel = activityLabel(active, group, ws.nameOf);
   const other = !group ? others[0] : undefined;
   const otherOnline = !!other && ws.isOnline(other);
   const subtitle = group
@@ -691,8 +816,12 @@ function ChatRoom({
               <span className="block truncate text-xs text-neutral-500">
                 {typingLabel ? (
                   <span className="text-emerald-400">{typingLabel}</span>
-                ) : otherOnline ? (
-                  <span className="text-emerald-400">en línea</span>
+                ) : other ? (
+                  otherOnline ? (
+                    <span className="text-emerald-400">En línea</span>
+                  ) : (
+                    "Desconectado"
+                  )
                 ) : (
                   subtitle
                 )}
@@ -809,7 +938,13 @@ function ChatRoom({
           </div>
         </header>
 
-        <div ref={listRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto px-3 py-4 [overflow-anchor:none] md:px-6">
+        <div
+          ref={listRef}
+          onScroll={onScroll}
+          onTouchStart={onListTouchStart}
+          onTouchMove={onListTouchMove}
+          className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 [overflow-anchor:none] md:px-6"
+        >
           {hasMore && (
             <div className="mb-4 flex justify-center">
               <button
@@ -904,13 +1039,14 @@ function ChatRoom({
           replyTo={replyTo ? { author: replyTo.uid === user.uid ? "ti" : ws.nameOf(replyTo.uid), preview: replyTo.preview } : null}
           focusSignal={focusSignal}
           keepKeyboard={keepKeyboard}
+          locked={chat.locked && !ws.admin}
           onAddFiles={(files) => void addFiles(files)}
           onRemoveAttachment={removeAttachment}
           onCancelReply={() => setReplyTo(null)}
           onSend={onSend}
           onSendSticker={onSendSticker}
           onSendVoice={onSendVoice}
-          onTyping={setTyping}
+          onActivity={onComposerActivity}
         />
 
         {dragOver && (
@@ -1025,6 +1161,15 @@ function ChatRoom({
       )}
 
       {viewer && <Lightbox file={viewer.file} url={viewer.url} store={fileStore} onClose={() => setViewer(null)} />}
+
+      {onceViewer && onceViewer.payload?.t === "file" && (
+        <ViewOnceViewer
+          file={onceViewer.payload.file}
+          store={fileStore}
+          onShown={() => void markOpened(getFirebase().db, chat.id, onceViewer.id, user.uid).catch(() => undefined)}
+          onClose={() => setOnceViewer(null)}
+        />
+      )}
     </div>
   );
 }

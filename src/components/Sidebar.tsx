@@ -8,19 +8,22 @@
  * - Fijados arriba; luego del más reciente al más antiguo.
  * - Filtros: Todos, No leídos, cada proyecto y Archivados.
  * - Pulsación larga, clic derecho o "⌄": fijar, silenciar, archivar.
+ * - Deslizar una fila a la izquierda (teléfono): acciones rápidas (fijar,
+ *   silenciar, marcar como leído y, para administradores, archivar).
  */
 
-import { useRef, useState, type MouseEvent, type PointerEvent } from "react";
+import { useRef, useState, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import { setChatArchived, type ChatInfo } from "@/lib/chats";
 import { getFirebase } from "@/lib/firebase";
 import { listTime } from "@/lib/format";
 import type { Workspace } from "@/hooks/useWorkspace";
 import { ChatAvatar, PersonAvatar } from "./Avatar";
-import { BellOffIcon, GearIcon, PinIcon, PlusIcon, TasksIcon } from "./Icons";
+import { ArchiveIcon, BellIcon, BellOffIcon, CheckIcon, GearIcon, PinIcon, PlusIcon, TasksIcon } from "./Icons";
 
 type Filter = { kind: "all" } | { kind: "unread" } | { kind: "archived" } | { kind: "group"; name: string };
 
 const LONG_PRESS_MS = 450;
+const ACTION_W = 68; // ancho de cada acción al deslizar
 
 function ChatRow({
   chat,
@@ -28,31 +31,76 @@ function ChatRow({
   myUid,
   selected,
   tasks,
+  swipeOpen,
   onSelect,
   onMenu,
+  onSwipeOpen,
 }: {
   chat: ChatInfo;
   ws: Workspace;
   myUid: string;
   selected: boolean;
   tasks: number;
+  swipeOpen: boolean;
   onSelect: () => void;
   onMenu: () => void;
+  onSwipeOpen: (open: boolean) => void;
 }) {
   const timer = useRef<number | null>(null);
-  const start = useRef<{ x: number; y: number } | null>(null);
+  const drag = useRef<{ x: number; y: number; base: number; moved: boolean; swiping: boolean } | null>(null);
   const longPressed = useRef(false);
+  const swiped = useRef(false);
+  const [dragX, setDragX] = useState<number | null>(null);
 
-  const clear = () => {
+  const unread = ws.unreadOf(chat);
+  const mentioned = ws.mentionedIn(chat);
+  const muted = ws.muted.has(chat.id);
+  const pinned = ws.pinned.includes(chat.id);
+  const group = chat.members.length > 2;
+
+  // Acciones rápidas al deslizar.
+  const actions: { key: string; label: string; icon: ReactNode; color: string; run: () => void }[] = [
+    {
+      key: "pin",
+      label: pinned ? "Desfijar" : "Fijar",
+      icon: <PinIcon className="h-5 w-5" />,
+      color: "bg-neutral-700",
+      run: () => ws.togglePin(chat.id),
+    },
+    {
+      key: "mute",
+      label: muted ? "Sonido" : "Silenciar",
+      icon: muted ? <BellIcon className="h-5 w-5" /> : <BellOffIcon className="h-5 w-5" />,
+      color: "bg-neutral-600",
+      run: () => ws.toggleMute(chat.id),
+    },
+  ];
+  if (unread > 0) {
+    actions.push({ key: "read", label: "Leído", icon: <CheckIcon className="h-5 w-5" />, color: "bg-sky-600", run: () => ws.markRead(chat) });
+  }
+  if (ws.admin) {
+    actions.push({
+      key: "archive",
+      label: chat.archived ? "Sacar" : "Archivar",
+      icon: <ArchiveIcon className="h-5 w-5" />,
+      color: "bg-amber-600",
+      run: () => void setChatArchived(getFirebase().db, chat.id, !chat.archived).catch(() => undefined),
+    });
+  }
+  const width = actions.length * ACTION_W;
+  const offset = dragX ?? (swipeOpen ? -width : 0);
+
+  const clearTimer = () => {
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = null;
-    start.current = null;
   };
 
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     if (e.pointerType === "mouse") return;
     longPressed.current = false;
-    start.current = { x: e.clientX, y: e.clientY };
+    swiped.current = false;
+    drag.current = { x: e.clientX, y: e.clientY, base: swipeOpen ? -width : 0, moved: false, swiping: false };
+    if (swipeOpen) return;
     timer.current = window.setTimeout(() => {
       longPressed.current = true;
       navigator.vibrate?.(15);
@@ -60,27 +108,54 @@ function ChatRow({
     }, LONG_PRESS_MS);
   };
   const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
-    const s = start.current;
-    if (s && Math.hypot(e.clientX - s.x, e.clientY - s.y) > 10) clear();
+    const d = drag.current;
+    if (!d) return;
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    if (!d.moved && Math.hypot(dx, dy) > 10) {
+      d.moved = true;
+      clearTimer();
+    }
+    if (!d.swiping && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.5) d.swiping = true;
+    if (d.swiping) setDragX(Math.max(-width - 24, Math.min(0, d.base + dx)));
+  };
+  const onPointerUp = () => {
+    const d = drag.current;
+    clearTimer();
+    drag.current = null;
+    if (!d) return;
+    if (d.swiping) {
+      swiped.current = true;
+      const x = dragX ?? d.base;
+      onSwipeOpen(x < -width / 2);
+      setDragX(null);
+    }
+  };
+  const onPointerCancel = () => {
+    clearTimer();
+    drag.current = null;
+    setDragX(null);
   };
   const onClickCapture = (e: MouseEvent<HTMLDivElement>) => {
-    if (longPressed.current) {
+    if (longPressed.current || swiped.current) {
       longPressed.current = false;
+      swiped.current = false;
       e.preventDefault();
       e.stopPropagation();
+      return;
+    }
+    // Con las acciones a la vista, tocar la fila solo las cierra.
+    if (swipeOpen && !(e.target as HTMLElement).closest("[data-swipe-action]")) {
+      e.preventDefault();
+      e.stopPropagation();
+      onSwipeOpen(false);
     }
   };
   const onContextMenu = (e: MouseEvent<HTMLDivElement>) => {
     e.preventDefault();
-    clear();
+    clearTimer();
     if (!longPressed.current) onMenu();
   };
-
-  const unread = ws.unreadOf(chat);
-  const mentioned = ws.mentionedIn(chat);
-  const muted = ws.muted.has(chat.id);
-  const pinned = ws.pinned.includes(chat.id);
-  const group = chat.members.length > 2;
 
   let preview: string;
   if (!chat.key) preview = "Esperando la llave de este chat…";
@@ -91,82 +166,106 @@ function ChatRow({
 
   return (
     <div
-      className="group relative"
+      className="group relative overflow-hidden rounded-xl"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
-      onPointerUp={clear}
-      onPointerCancel={clear}
-      onPointerLeave={clear}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
       onClickCapture={onClickCapture}
       onContextMenu={onContextMenu}
     >
-      <button
-        onClick={onSelect}
-        className={`flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors [-webkit-touch-callout:none] [@media(pointer:coarse)]:select-none ${
-          selected ? "bg-neutral-800/80" : "hover:bg-neutral-900"
-        }`}
-        aria-label={`${chat.name}${unread ? `, ${unread} sin leer` : ""}`}
-      >
-        <ChatAvatar ws={ws} chat={chat} myUid={myUid} />
-        <span className="min-w-0 flex-1">
-          <span className="flex items-baseline gap-2">
-            <span
-              className={`min-w-0 flex-1 truncate text-[15px] ${unread ? "font-semibold text-neutral-50" : "text-neutral-200"} ${
-                chat.metaOk ? "" : "italic text-neutral-500"
-              }`}
+      {offset < 0 && (
+        <div className="absolute inset-y-0 right-0 flex" style={{ width }}>
+          {actions.map((a) => (
+            <button
+              key={a.key}
+              type="button"
+              data-swipe-action
+              onClick={() => {
+                a.run();
+                onSwipeOpen(false);
+              }}
+              style={{ width: ACTION_W }}
+              className={`flex flex-col items-center justify-center gap-1 text-[10px] font-medium text-white ${a.color}`}
             >
-              {chat.name}
-            </span>
-            {chat.lastMessageAt && (
-              <span className={`shrink-0 text-[11px] ${unread && !muted ? "text-emerald-400" : "text-neutral-500"}`}>
-                {listTime(chat.lastMessageAt)}
-              </span>
-            )}
-          </span>
-          <span className="mt-0.5 flex items-center gap-1.5">
-            <span className={`min-w-0 flex-1 truncate text-[13px] ${unread ? "text-neutral-300" : "text-neutral-500"}`}>
-              {preview}
-            </span>
-            {tasks > 0 && (
-              <span
-                className="flex shrink-0 items-center gap-0.5 text-[11px] text-amber-400/90"
-                aria-label={`${tasks} pendientes`}
-                title={`${tasks} pendientes`}
-              >
-                <TasksIcon className="h-3.5 w-3.5" />
-                {tasks}
-              </span>
-            )}
-            {muted && <BellOffIcon className="h-3.5 w-3.5 shrink-0 text-neutral-500" />}
-            {pinned && <PinIcon className="h-3.5 w-3.5 shrink-0 text-neutral-500" />}
-            {mentioned && (
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-sky-500 text-[11px] font-bold text-neutral-950" aria-label="te mencionaron">
-                @
-              </span>
-            )}
-            {unread > 0 && (
-              <span
-                className={`min-w-[1.25rem] shrink-0 rounded-full px-1.5 text-center text-[11px] font-semibold leading-5 ${
-                  muted ? "bg-neutral-600 text-neutral-100" : "bg-emerald-500 text-neutral-950"
-                }`}
-                aria-label="sin leer"
-              >
-                {unread > 99 ? "99+" : unread}
-              </span>
-            )}
-            {/* Lugar para el botón ⌄ en computadora */}
-            <span className="hidden w-5 shrink-0 [@media(pointer:fine)]:block" />
-          </span>
-        </span>
-      </button>
-      <button
-        type="button"
-        onClick={onMenu}
-        className="absolute bottom-2 right-2 hidden h-5 w-5 items-center justify-center rounded text-sm leading-none text-neutral-400 opacity-0 transition-opacity hover:bg-neutral-800 hover:text-neutral-100 focus:opacity-100 group-hover:opacity-100 [@media(pointer:fine)]:flex"
-        aria-label={`Opciones de ${chat.name}`}
+              {a.icon}
+              {a.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div
+        className="relative touch-pan-y bg-neutral-950"
+        style={{ transform: offset ? `translateX(${offset}px)` : undefined, transition: dragX === null ? "transform 180ms ease-out" : "none" }}
       >
-        ⌄
-      </button>
+        <button
+          onClick={onSelect}
+          className={`flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors [-webkit-touch-callout:none] [@media(pointer:coarse)]:select-none ${
+            selected ? "bg-neutral-800/80" : "hover:bg-neutral-900"
+          }`}
+          aria-label={`${chat.name}${unread ? `, ${unread} sin leer` : ""}`}
+        >
+          <ChatAvatar ws={ws} chat={chat} myUid={myUid} />
+          <span className="min-w-0 flex-1">
+            <span className="flex items-baseline gap-2">
+              <span
+                className={`min-w-0 flex-1 truncate text-[15px] ${unread ? "font-semibold text-neutral-50" : "text-neutral-200"} ${
+                  chat.metaOk ? "" : "italic text-neutral-500"
+                }`}
+              >
+                {chat.name}
+              </span>
+              {chat.lastMessageAt && (
+                <span className={`shrink-0 text-[11px] ${unread && !muted ? "text-emerald-400" : "text-neutral-500"}`}>
+                  {listTime(chat.lastMessageAt)}
+                </span>
+              )}
+            </span>
+            <span className="mt-0.5 flex items-center gap-1.5">
+              <span className={`min-w-0 flex-1 truncate text-[13px] ${unread ? "text-neutral-300" : "text-neutral-500"}`}>
+                {preview}
+              </span>
+              {tasks > 0 && (
+                <span
+                  className="flex shrink-0 items-center gap-0.5 text-[11px] text-amber-400/90"
+                  aria-label={`${tasks} pendientes`}
+                  title={`${tasks} pendientes`}
+                >
+                  <TasksIcon className="h-3.5 w-3.5" />
+                  {tasks}
+                </span>
+              )}
+              {muted && <BellOffIcon className="h-3.5 w-3.5 shrink-0 text-neutral-500" />}
+              {pinned && <PinIcon className="h-3.5 w-3.5 shrink-0 text-neutral-500" />}
+              {mentioned && (
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-sky-500 text-[11px] font-bold text-neutral-950" aria-label="te mencionaron">
+                  @
+                </span>
+              )}
+              {unread > 0 && (
+                <span
+                  className={`min-w-[1.25rem] shrink-0 rounded-full px-1.5 text-center text-[11px] font-semibold leading-5 ${
+                    muted ? "bg-neutral-600 text-neutral-100" : "bg-emerald-500 text-neutral-950"
+                  }`}
+                  aria-label="sin leer"
+                >
+                  {unread > 99 ? "99+" : unread}
+                </span>
+              )}
+              {/* Lugar para el botón ⌄ en computadora */}
+              <span className="hidden w-5 shrink-0 [@media(pointer:fine)]:block" />
+            </span>
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={onMenu}
+          className="absolute bottom-2 right-2 hidden h-5 w-5 items-center justify-center rounded text-sm leading-none text-neutral-400 opacity-0 transition-opacity hover:bg-neutral-800 hover:text-neutral-100 focus:opacity-100 group-hover:opacity-100 [@media(pointer:fine)]:flex"
+          aria-label={`Opciones de ${chat.name}`}
+        >
+          ⌄
+        </button>
+      </div>
     </div>
   );
 }
@@ -237,6 +336,7 @@ export function Sidebar({
 }) {
   const [filter, setFilter] = useState<Filter>({ kind: "all" });
   const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [swipeFor, setSwipeFor] = useState<string | null>(null);
   const totalTasks = Object.values(taskCounts).reduce((a, b) => a + b, 0);
 
   const recent = (a: ChatInfo, b: ChatInfo) => (b.lastMessageAt?.getTime() ?? 0) - (a.lastMessageAt?.getTime() ?? 0);
@@ -354,8 +454,10 @@ export function Sidebar({
             myUid={myUid}
             selected={chat.id === selectedId}
             tasks={taskCounts[chat.id] ?? 0}
+            swipeOpen={swipeFor === chat.id}
             onSelect={() => onSelect(chat.id)}
             onMenu={() => setMenuFor(chat.id)}
+            onSwipeOpen={(open) => setSwipeFor((cur) => (open ? chat.id : cur === chat.id ? null : cur))}
           />
         ))}
 

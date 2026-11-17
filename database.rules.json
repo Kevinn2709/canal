@@ -1,0 +1,44 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "chatMembers": {
+      "$chatId": {
+        ".read": "auth != null && (data.child(auth.uid).exists() || auth.uid === '53RqgaavXfZDCd0Ln00OMwGlGnF2' || auth.uid === 'cqjDflCzPyb1gYwU7EklOpYVSk02' || auth.uid === 'IVXTIt6DWgcWLa97ufOOjCmSWQ22')",
+        ".write": "auth != null && (auth.uid === '53RqgaavXfZDCd0Ln00OMwGlGnF2' || auth.uid === 'cqjDflCzPyb1gYwU7EklOpYVSk02' || auth.uid === 'IVXTIt6DWgcWLa97ufOOjCmSWQ22')",
+        "$uid": {
+          ".read": "auth != null && auth.uid === $uid",
+          ".write": "auth != null && auth.uid === $uid && !newData.exists()",
+          ".validate": "newData.val() === true"
+        }
+      }
+    },
+
+    "presence": {
+      "$chatId": {
+        ".read": "auth != null && root.child('chatMembers').child($chatId).child(auth.uid).exists()",
+        "$uid": {
+          ".write": "auth != null && auth.uid === $uid && root.child('chatMembers').child($chatId).child(auth.uid).exists()",
+          ".validate": "newData.hasChildren(['on', 'at'])",
+          "on": { ".validate": "newData.isBoolean()" },
+          "at": { ".validate": "newData.isNumber()" },
+          "$other": { ".validate": false }
+        }
+      }
+    },
+
+    "activity": {
+      "$chatId": {
+        ".read": "auth != null && root.child('chatMembers').child($chatId).child(auth.uid).exists()",
+        "$uid": {
+          ".write": "auth != null && auth.uid === $uid && (root.child('chatMembers').child($chatId).child(auth.uid).exists() || !newData.exists())",
+          ".validate": "newData.hasChildren(['k', 'at'])",
+          "k": { ".validate": "newData.isString() && (newData.val() === 'text' || newData.val() === 'voice' || newData.val() === 'file')" },
+          "at": { ".validate": "newData.isNumber()" },
+          "$other": { ".validate": false }
+        }
+      }
+    }
+  }
+}
