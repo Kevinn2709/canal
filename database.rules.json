@@ -5,8 +5,8 @@
 
     "chatMembers": {
       "$chatId": {
-        ".read": "auth != null && (data.child(auth.uid).exists() || auth.uid === '53RqgaavXfZDCd0Ln00OMwGlGnF2' || auth.uid === 'cqjDflCzPyb1gYwU7EklOpYVSk02' || auth.uid === 'IVXTIt6DWgcWLa97ufOOjCmSWQ22')",
-        ".write": "auth != null && (auth.uid === '53RqgaavXfZDCd0Ln00OMwGlGnF2' || auth.uid === 'cqjDflCzPyb1gYwU7EklOpYVSk02' || auth.uid === 'IVXTIt6DWgcWLa97ufOOjCmSWQ22')",
+        ".read": "auth != null && (data.child(auth.uid).exists() || auth.uid === '53RqgaavXfZDCd0Ln00OMwGlGnF2' || auth.uid === 'cqjDflCzPyb1gYwU7EklOpYVSk02' || auth.uid === 'daNRBtWOCIYP3XTSpoHca8yKaYL2')",
+        ".write": "auth != null && (auth.uid === '53RqgaavXfZDCd0Ln00OMwGlGnF2' || auth.uid === 'cqjDflCzPyb1gYwU7EklOpYVSk02' || auth.uid === 'daNRBtWOCIYP3XTSpoHca8yKaYL2')",
         "$uid": {
           ".read": "auth != null && auth.uid === $uid",
           ".write": "auth != null && auth.uid === $uid && !newData.exists()",
