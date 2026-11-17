@@ -62,11 +62,11 @@ Usa:
 11. **Avisos con la web abierta** (Configuración, por dispositivo): aviso
     dentro de la web con sonido cuando llega un mensaje de otro chat, y aviso
     del sistema cuando la web está en segundo plano.
-12. **Notificaciones con la web cerrada (push):** en Android y computadora
-    desde el navegador; en iPhone, con la web agregada a la pantalla de inicio
-    (iOS 16.4 o posterior). El aviso nunca lleva el texto del mensaje: dice
-    "Nuevo mensaje" o, si lo activas en ese dispositivo, de qué chat y de quién.
-    Los chats silenciados no avisan, salvo que te mencionen.
+12. **Notificaciones con la web cerrada (push), solo fundadores y admins:** en
+    Android y computadora desde el navegador; en iPhone, con la web agregada a
+    la pantalla de inicio (iOS 16.4 o posterior). El aviso es siempre neutro:
+    "Nuevo mensaje", sin texto, chat ni remitente. Los chats silenciados no
+    avisan, salvo que te mencionen.
 13. **Recordar en este dispositivo** (opcional): guarda la llave personal (no
     la frase) en el navegador. "Cerrar sesión" la borra.
 14. **Destacar, eliminar y vaciar** (pulsación larga o clic derecho en un
@@ -84,6 +84,52 @@ Usa:
     al enviar, el teclado no se cierra.
 17. **Llamadas 1 a 1** (voz y video), en los chats de dos personas: ver
     abajo.
+
+## Novedades de la versión 0.6
+
+- **Presencia instantánea (Realtime Database):** "En línea" / "Desconectado"
+  al momento, con `onDisconnect()` (si se cierra la pestaña o se corta la red,
+  el servidor te desconecta solo) y latido cada 30 s que vence a los 45 s.
+  No gasta escrituras de Firestore. Sin Realtime Database configurada, todo
+  sigue funcionando como antes (latido de 90 s en Firestore).
+- **Estados:** "Escribiendo…", "Grabando audio…" y "Enviando archivo…".
+- **Nombres:** un chat de dos muestra el nombre del otro. Cada quien puede
+  ponerle un **alias** a cualquier chat (Información del chat); solo lo ve
+  esa persona y va cifrado.
+- **Ajustes del grupo (fundadores y admins):** foto del chat (cifrada con la
+  llave del chat) y "Solo administradores pueden escribir".
+- **Palomitas:** reloj (enviando), una (guardado en el servidor) y dos azules
+  (leído). Se guarda el id del último mensaje que vio cada quien
+  (`reads/{uid}.last`); lo nuevo queda con una palomita hasta que el otro
+  vuelve a enfocar el chat.
+- **Gestos (teléfono):** deslizar hacia abajo en los mensajes cierra el
+  teclado; deslizar un mensaje a la derecha lo responde; deslizar un chat de
+  la lista a la izquierda muestra fijar / silenciar / leído / archivar; doble
+  toque en un mensaje reacciona con 👍.
+- **Privacidad en pantalla:** al salir de la app o perder el foco se desenfoca
+  todo (se apaga en Configuración → Chats y llamadas). **Texto oculto**: se
+  lee solo mientras lo mantienes presionado. **Fotos y videos de una vista**:
+  se abren una vez; al cerrarse se libera la memoria y quedan como "Abierta";
+  cuando todos los abrieron, se borra el archivo cifrado. Una web no puede
+  impedir capturas de pantalla.
+- **Push solo para fundadores y admins**, siempre neutro ("Nuevo mensaje",
+  sin texto, chat ni remitente). Al tocarlo se abre el chat. Los miembros
+  (clientes) no ven la opción y las reglas no les dejan suscribirse.
+
+### Actualizar a la 0.6 (en este orden)
+
+1. **Reglas de Firestore:** pega el nuevo `firestore.rules` → Publicar.
+2. **Realtime Database:** Firebase → Realtime Database → Crear base de datos.
+   En la pestaña Reglas pega `database.rules.json` → Publicar. Si agregas
+   alguien a `founders()` o `admins()`, agrégalo también ahí.
+3. **Vercel → Settings → Environment Variables** (Production y Preview):
+   - `NEXT_PUBLIC_FIREBASE_DATABASE_URL` = la URL de la base (sale arriba en
+     la pestaña Datos, p. ej. `https://canal-bf662-default-rtdb.firebaseio.com`).
+   - (recomendado) `PUSH_UIDS` = los UID de fundadores y admins separados por
+     comas: la función de avisos solo les manda push a ellos.
+4. Redeploy (o merge de la rama nueva) y recarga la web. La presencia empieza
+   a funcionar en cuanto un fundador o admin abre la web (copia los miembros
+   de cada chat a Realtime Database).
 
 ## Llamadas
 
