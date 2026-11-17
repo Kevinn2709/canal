@@ -89,10 +89,14 @@ export async function deleteMessage(
   msg: { id: string; payload: Payload | null },
   newLast?: StoredMessage | null
 ): Promise<void> {
-  const reactions = await getDocs(query(collection(db, "chats", chat.id, "reactions"), where("msg", "==", msg.id)));
+  const [reactions, opened] = await Promise.all([
+    getDocs(query(collection(db, "chats", chat.id, "reactions"), where("msg", "==", msg.id))),
+    getDocs(query(collection(db, "chats", chat.id, "opened"), where("msg", "==", msg.id))).catch(() => null),
+  ]);
   const batch = writeBatch(db);
   batch.delete(messageRef(db, chat.id, msg.id));
   for (const r of reactions.docs) batch.delete(doc(db, "chats", chat.id, "reactions", r.id));
+  for (const o of opened?.docs ?? []) batch.delete(doc(db, "chats", chat.id, "opened", o.id));
   for (const f of filesOf(msg.payload)) for (const ref of chatFileChunks(db, chat, f)) batch.delete(ref);
   if (newLast !== undefined) {
     const sealed = await previewFor(key, chat.id, newLast, myUid);
@@ -133,6 +137,10 @@ export async function clearChat(
   for (const r of reactions.docs) {
     if (dropped.has(String(r.data().msg))) refs.push(doc(db, "chats", chat.id, "reactions", r.id));
   }
+  const opened = await getDocs(collection(db, "chats", chat.id, "opened")).catch(() => null);
+  for (const o of opened?.docs ?? []) {
+    if (dropped.has(String(o.data().msg))) refs.push(doc(db, "chats", chat.id, "opened", o.id));
+  }
 
   onProgress?.(0, refs.length);
   for (let i = 0; i < refs.length; i += BATCH) {
@@ -152,4 +160,11 @@ export async function clearChat(
   const sealed = await previewFor(key, chat.id, last, myUid);
   await updateDoc(doc(db, "chats", chat.id), { lastIv: sealed.iv, lastCt: sealed.ct });
   return { deleted: drop.length, kept: kept.length };
+}
+
+/** Borra los trozos cifrados de un archivo (el mensaje se queda). */
+export async function deleteFileChunks(db: Firestore, chat: ChatRef, file: FileInfo): Promise<void> {
+  const batch = writeBatch(db);
+  for (const ref of chatFileChunks(db, chat, file)) batch.delete(ref);
+  await batch.commit();
 }

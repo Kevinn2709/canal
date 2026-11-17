@@ -2,19 +2,56 @@
 
 /**
  * ChatInfoPanel.tsx — Información del chat: miembros (agregar, quitar,
- * salir), silenciar, fijar, renombrar y archivar.
+ * salir), silenciar, fijar, tu alias para este chat, renombrar y archivar.
+ *
+ * - Alias: un nombre solo para ti (cifrado, en todos tus dispositivos). Tiene
+ *   prioridad sobre el nombre del chat.
+ * - Ajustes del grupo (solo administradores: fundadores y admins): foto del
+ *   chat (cifrada con su llave) y "solo administradores pueden escribir".
  *
  * Al agregar a alguien se le entrega la llave del chat: verá todo el
  * historial. Al quitarlo, las reglas de Firestore le cierran el acceso.
  */
 
-import { useState } from "react";
-import { addMembers, removeMember, setChatArchived, type ChatInfo, type KeyTarget } from "@/lib/chats";
-import { getFirebase } from "@/lib/firebase";
+import { useRef, useState } from "react";
+import {
+  addMembers,
+  removeMember,
+  setChatArchived,
+  setChatLocked,
+  setChatPhoto,
+  type ChatInfo,
+  type KeyTarget,
+} from "@/lib/chats";
+import { getFirebase, getRtdb } from "@/lib/firebase";
+import { prepareAvatar } from "@/lib/members";
+import { MAX_ALIAS_LENGTH } from "@/lib/prefs";
 import type { Session } from "@/lib/session";
 import type { Workspace } from "@/hooks/useWorkspace";
+import { leaveRtdbChat } from "@/hooks/useRealtime";
 import { ChatAvatar, PersonAvatar } from "./Avatar";
 import { BackIcon, CheckIcon, CloseIcon } from "./Icons";
+
+function Switch({ label, hint, on, disabled, onChange }: { label: string; hint?: string; on: boolean; disabled?: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+      className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-neutral-900 disabled:opacity-50"
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm text-neutral-200">{label}</span>
+        {hint && <span className="mt-0.5 block text-xs text-neutral-500">{hint}</span>}
+      </span>
+      <span className={`relative h-6 w-10 shrink-0 rounded-full transition-colors ${on ? "bg-emerald-500" : "bg-neutral-700"}`}>
+        <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${on ? "left-[1.125rem]" : "left-0.5"}`} />
+      </span>
+    </button>
+  );
+}
 
 export function ChatInfoPanel({
   chat,
@@ -36,11 +73,15 @@ export function ChatInfoPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [alias, setAliasDraft] = useState(chat.alias);
+  const [aliasSaved, setAliasSaved] = useState(false);
+  const photoInput = useRef<HTMLInputElement>(null);
 
   const uid = session.uid;
   const muted = ws.muted.has(chat.id);
   const pinned = ws.pinned.includes(chat.id);
-  const admin = ws.admin; // solo un fundador cambia nombre, archiva o cambia miembros
+  const admin = ws.admin; // solo fundadores y admins cambian nombre, foto, ajustes, archivan o cambian miembros
+  const hasPhoto = ws.chatPhotos.has(chat.id);
   const candidates = [...ws.profiles.values()].filter((p) => p.valid && !chat.members.includes(p.uid));
 
   const run = async (fn: () => Promise<void>) => {
@@ -71,7 +112,30 @@ export function ChatInfoPanel({
     run(async () => {
       await removeMember(getFirebase().db, chat.id, chat.members, member);
       setConfirmRemove(null);
-      if (member === uid) onLeft();
+      if (member === uid) {
+        await leaveRtdbChat(getRtdb(), chat.id, uid);
+        onLeft();
+      }
+    });
+
+  const saveAlias = () =>
+    run(async () => {
+      await ws.setAlias(chat.id, alias);
+      setAliasSaved(true);
+      window.setTimeout(() => setAliasSaved(false), 2000);
+    });
+
+  const changePhoto = (file: File | undefined) =>
+    run(async () => {
+      if (!file || !chat.key) return;
+      let blob: Blob;
+      try {
+        blob = await prepareAvatar(file);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "No se pudo usar esa imagen.");
+        return;
+      }
+      await setChatPhoto(getFirebase().db, chat.key, chat.id, uid, blob);
     });
 
   const row = (label: string, onClick: () => void, danger = false) => (
@@ -104,16 +168,104 @@ export function ChatInfoPanel({
           <ChatAvatar ws={ws} chat={chat} myUid={uid} size={80} />
           <p className="text-lg font-medium">{chat.name}</p>
           <p className="text-xs text-neutral-500">
+            {chat.direct && chat.rawName ? `${chat.rawName} · ` : ""}
             {chat.group}
             {chat.legacy ? " · conversación de antes" : ""}
+            {chat.locked ? " · solo administradores escriben" : ""}
           </p>
         </div>
+
+        <div className="space-y-2 border-t border-neutral-900 px-4 py-4">
+          <label htmlFor="alias" className="block text-[11px] font-medium uppercase tracking-wider text-neutral-500">
+            Tu alias para este chat
+          </label>
+          <div className="flex gap-2">
+            <input
+              id="alias"
+              value={alias}
+              maxLength={MAX_ALIAS_LENGTH}
+              onChange={(e) => setAliasDraft(e.target.value)}
+              placeholder={chat.direct ? "Ej. «Cliente – Tienda Centro»" : "Un nombre solo para ti"}
+              className="min-w-0 flex-1 rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-base outline-none focus:border-neutral-600"
+            />
+            <button
+              type="button"
+              onClick={() => void saveAlias()}
+              disabled={busy || alias.trim() === chat.alias}
+              className="shrink-0 rounded-md bg-neutral-100 px-3 text-xs font-medium text-neutral-900 disabled:opacity-30"
+            >
+              {aliasSaved ? "Listo" : "Guardar"}
+            </button>
+          </div>
+          <p className="text-[11px] text-neutral-500">Solo lo ves tú. Déjalo vacío para usar el nombre normal.</p>
+        </div>
+
+        {admin && !chat.legacy && chat.key && (
+          <div className="border-t border-neutral-900">
+            <p className="px-4 pb-1 pt-4 text-[11px] font-medium uppercase tracking-wider text-neutral-500">
+              Ajustes del grupo · administradores
+            </p>
+            <div className="flex items-center gap-3 px-4 py-3">
+              <ChatAvatar ws={ws} chat={chat} myUid={uid} size={44} />
+              <div className="flex flex-wrap gap-2">
+                <input
+                  ref={photoInput}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    e.target.value = "";
+                    void changePhoto(f);
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => photoInput.current?.click()}
+                  disabled={busy}
+                  className="rounded-md border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 hover:bg-neutral-900 disabled:opacity-40"
+                >
+                  {hasPhoto ? "Cambiar foto" : "Poner foto"}
+                </button>
+                {hasPhoto && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void run(async () => {
+                        if (chat.key) await setChatPhoto(getFirebase().db, chat.key, chat.id, uid, null);
+                      })
+                    }
+                    disabled={busy}
+                    className="rounded-md px-3 py-1.5 text-xs text-neutral-400 hover:bg-neutral-900 disabled:opacity-40"
+                  >
+                    Quitar foto
+                  </button>
+                )}
+              </div>
+            </div>
+            <Switch
+              label="Solo administradores pueden escribir"
+              hint="Los miembros leen y reaccionan, pero no envían mensajes."
+              on={chat.locked}
+              disabled={busy}
+              onChange={(v) => void run(() => setChatLocked(getFirebase().db, chat.id, v))}
+            />
+            <Switch
+              label="Archivado"
+              hint="Pasa a la pestaña Archivados de todos."
+              on={chat.archived}
+              disabled={busy}
+              onChange={(v) => void run(() => setChatArchived(getFirebase().db, chat.id, v))}
+            />
+          </div>
+        )}
 
         <div className="divide-y divide-neutral-900 border-y border-neutral-900">
           {row(muted ? "Quitar silencio" : "Silenciar notificaciones", () => ws.toggleMute(chat.id))}
           {row(pinned ? "Desfijar de la lista" : "Fijar arriba en la lista", () => ws.togglePin(chat.id))}
           {admin && chat.key && row("Cambiar nombre o proyecto", onEdit)}
           {admin &&
+            chat.legacy &&
             row(chat.archived ? "Desarchivar" : "Archivar", () =>
               void run(() => setChatArchived(getFirebase().db, chat.id, !chat.archived))
             )}

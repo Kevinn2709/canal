@@ -2,7 +2,8 @@
  * next.config.js — Headers de seguridad.
  *
  * El CSP permite conexiones solo a este sitio (incluida /api/notify) y a los
- * servicios de Google que usa Firebase (Authentication y Firestore). El
+ * servicios de Google que usa Firebase (Authentication, Firestore y Realtime
+ * Database). El
  * service worker (/sw.js) y el manifest se sirven desde este mismo sitio.
  */
 
@@ -16,7 +17,9 @@ const csp = [
   "img-src 'self' data: blob:",
   "media-src 'self' blob:",
   "font-src 'self'",
-  `connect-src 'self' https://*.googleapis.com${isDev ? " ws:" : ""}`,
+  // Realtime Database (presencia y "escribiendo…"): *.firebaseio.com o
+  // *.firebasedatabase.app, por WebSocket.
+  `connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://*.firebasedatabase.app wss://*.firebasedatabase.app${isDev ? " ws:" : ""}`,
   "frame-src https://*.firebaseapp.com",
   "worker-src 'self'",
   "manifest-src 'self'",

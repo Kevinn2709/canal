@@ -4,9 +4,13 @@
  * - Ajustes de este dispositivo (avisos dentro de la web, sonido, avisos del
  *   sistema con la web abierta, nombres en las notificaciones). Se guardan en
  *   este navegador; cada dispositivo tiene los suyos.
- * - Push con la web cerrada: registra el service worker, suscribe este
- *   dispositivo y guarda la suscripción en push/{uid}. Al enviar un mensaje,
- *   la app le pide a /api/notify que avise a los demás miembros.
+ * - Push con la web cerrada: solo para administradores (fundadores y admins).
+ *   Registra el service worker, suscribe este dispositivo y guarda la
+ *   suscripción en push/{uid}. Al enviar un mensaje, la app le pide a
+ *   /api/notify que avise a los demás. Los miembros no pueden suscribirse (lo
+ *   impiden también las reglas de Firestore y la función).
+ * - El aviso es siempre neutro: "Nuevo mensaje" o "Llamada entrante", sin
+ *   nombres ni texto, por si se ve en la pantalla bloqueada.
  * - En iPhone, el push solo funciona si la web se agregó a la pantalla de
  *   inicio y se abrió desde ese ícono (iOS 16.4 o posterior).
  */
@@ -21,10 +25,10 @@ export interface DeviceSettings {
   inApp: boolean; // aviso dentro de la web cuando llega un mensaje de otro chat
   sound: boolean; // sonido con ese aviso
   system: boolean; // aviso del sistema con la web abierta pero en segundo plano
-  names: boolean; // las notificaciones dicen de qué chat y de quién es
   keepKeyboard: boolean; // al enviar, el teclado sigue abierto
   showOnline: boolean; // los demás ven cuando estás "en línea"
   relayCalls: boolean; // llamadas siempre por el servidor de relevo (oculta tu IP)
+  shield: boolean; // tapar la pantalla (desenfoque) al salir de la app o perder el foco
 }
 
 const SETTINGS_KEY = "canal:ajustes";
@@ -32,10 +36,10 @@ const DEFAULTS: DeviceSettings = {
   inApp: true,
   sound: true,
   system: false,
-  names: false,
   keepKeyboard: true,
   showOnline: true,
   relayCalls: false,
+  shield: true,
 };
 const SETTINGS_EVENT = "canal-ajustes";
 
@@ -116,7 +120,7 @@ export function registerServiceWorker(): Promise<ServiceWorkerRegistration | nul
 export async function showSystemNotification(title: string, body: string, chatId: string): Promise<void> {
   if (notificationPermission() !== "granted") return;
   const reg = await registerServiceWorker();
-  const options = { body, tag: `c-${chatId}`, icon: "/icon-192.png", data: { chatId } };
+  const options = { body, tag: `c-${chatId}`, icon: "/notification-icon.png", badge: "/badge-96.png", data: { chatId } };
   try {
     if (reg) {
       await reg.showNotification(title, options);
@@ -202,7 +206,8 @@ async function writeSubscription(db: Firestore, uid: string, sub: PushSubscripti
  * Activa el push en este dispositivo. Debe llamarse desde un toque del
  * usuario (iPhone lo exige para pedir permiso). Lanza Error con mensaje.
  */
-export async function enablePush(db: Firestore, uid: string): Promise<void> {
+export async function enablePush(db: Firestore, uid: string, allowed: boolean): Promise<void> {
+  if (!allowed) throw new Error("Las notificaciones push son solo para administradores.");
   if (!pushSupported()) {
     throw new Error(
       isIOS() && !isStandalone()
@@ -258,12 +263,29 @@ export async function refreshPush(db: Firestore, uid: string): Promise<boolean> 
   return true;
 }
 
-/** Silencia o reactiva un chat (no llegan push salvo que te mencionen). */
-export async function setMuted(db: Firestore, uid: string, muted: string[]): Promise<void> {
+/**
+ * Silencia o reactiva un chat (no llegan push salvo que te mencionen). Quien
+ * no puede recibir push guarda además sus suscripciones vacías (las reglas no
+ * aceptan suscripciones de miembros).
+ */
+export async function setMuted(db: Firestore, uid: string, muted: string[], canPush: boolean): Promise<void> {
   const ref = doc(db, "push", uid);
   const snap = await getDoc(ref);
-  if (snap.exists()) await updateDoc(ref, { muted });
+  if (snap.exists()) await updateDoc(ref, canPush ? { muted } : { muted, subs: {} });
   else await setDoc(ref, { subs: {}, muted });
+}
+
+/**
+ * Miembros: si este dispositivo tenía push de una versión anterior, se
+ * desactiva y se borran sus suscripciones guardadas.
+ */
+export async function dropPushIfNotAllowed(db: Firestore, uid: string): Promise<void> {
+  const sub = await currentSubscription();
+  if (sub) await sub.unsubscribe().catch(() => undefined);
+  const ref = doc(db, "push", uid);
+  const snap = await getDoc(ref).catch(() => null);
+  const subs = snap?.exists() ? (snap.data()?.subs as Record<string, unknown> | undefined) : undefined;
+  if (subs && Object.keys(subs).length > 0) await updateDoc(ref, { subs: {} });
 }
 
 // ---------------------------------------------------------------------------

@@ -21,7 +21,13 @@ const firebaseConfig = {
   projectId: "canal-bf662",
   storageBucket: "canal-bf662.firebasestorage.app",
   messagingSenderId: "468731667100",
-  appId: "1:468731667100:web:0a9365ef2d3749180f4359"
+  appId: "1:468731667100:web:0a9365ef2d3749180f4359",
+  // Realtime Database (presencia y "escribiendo…" al instante). Se toma de la
+  // variable NEXT_PUBLIC_FIREBASE_DATABASE_URL (Vercel -> Settings ->
+  // Environment Variables). Sin ella, la app usa Firestore como antes.
+  ...(process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL
+    ? { databaseURL: process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL }
+    : {}),
 };
 
 // Initialize Firebase

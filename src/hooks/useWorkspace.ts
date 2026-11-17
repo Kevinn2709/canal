@@ -15,13 +15,18 @@
  *   entrega cifrada. Así nadie se queda sin poder leer.
  * - No leídos (por número de mensajes), menciones, fijados, silenciados y
  *   pendientes abiertos de todas las conversaciones.
- * - "En línea": con la web a la vista, cada quien marca chats/{id}/presence
- *   cada 90 s en todos sus chats. Solo lo ven quienes comparten un chat
- *   contigo. Se puede apagar en Configuración.
+ * - "En línea": con Realtime Database (useRealtime.ts), al instante con
+ *   onDisconnect() y latido de 30 s (vence a los 45 s), sin gastar escrituras
+ *   de Firestore. Sin RTDB, como antes: chats/{id}/presence cada 90 s. Solo lo
+ *   ven quienes comparten un chat contigo. Se puede apagar en Configuración.
+ * - Alias personales de cada chat (prefs/{uid}, cifrados), foto del chat
+ *   (chats/{id}/photo/current, cifrada con la llave del chat) y hasta qué
+ *   mensaje leyó cada quien (chats/{id}/reads: n, at y last).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Bytes,
   collection,
   doc,
   onSnapshot,
@@ -34,11 +39,12 @@ import {
   type Timestamp,
   type Unsubscribe,
 } from "firebase/firestore";
-import { getFirebase } from "@/lib/firebase";
+import { getFirebase, getRtdb } from "@/lib/firebase";
 import { fingerprint, importAesKey, securityCode } from "@/lib/crypto";
 import { colorFor, decryptAvatar, decryptProfile, type Profile } from "@/lib/members";
 import {
   decryptChatMeta,
+  decryptChatPhoto,
   decryptLast,
   displayName,
   unwrapChatKey,
@@ -50,7 +56,9 @@ import {
 } from "@/lib/chats";
 import { decryptTask, type Task } from "@/lib/tasks";
 import { loadSettings, onSettingsChange, setMuted } from "@/lib/push";
+import { decryptAliases, saveAliases } from "@/lib/prefs";
 import type { Session } from "@/lib/session";
+import { useRtdbMembership, useRtdbMirrorSync, useRtdbPresence } from "./useRealtime";
 
 type Raw = { id: string; data: DocumentData };
 
@@ -143,10 +151,17 @@ interface ChatKey {
   sig: string;
 }
 
+/** Hasta dónde leyó alguien un chat. */
+export interface ReadMark {
+  n: number;
+  at: Date | null;
+  last: string; // id del último mensaje que vio ("" si no se sabe)
+}
+
 export interface Workspace {
   error: string | null;
   loading: boolean;
-  admin: boolean; // fundador: crea chats, aprueba y ve a todos
+  admin: boolean; // fundador o admin: crea chats, aprueba, ve a todos, ajusta grupos y recibe push
   profiles: Map<string, Profile>;
   avatars: Map<string, string>; // uid -> URL de la foto
   me: Profile | null;
@@ -156,11 +171,16 @@ export interface Workspace {
   pinned: string[];
   muted: Set<string>;
   openTasks: Task[];
+  aliases: Record<string, string>;
+  chatPhotos: Map<string, string>; // chatId -> URL de la foto del chat
+  rtdbChats: Set<string>; // chats donde la presencia y la actividad van por RTDB
   nameOf: (uid: string) => string;
   unreadOf: (chat: ChatInfo) => number;
   mentionedIn: (chat: ChatInfo) => boolean;
-  markRead: (chat: ChatInfo) => void;
+  markRead: (chat: ChatInfo, lastId?: string) => void;
+  readMarks: (chatId: string) => Map<string, ReadMark>;
   isOnline: (uid: string) => boolean;
+  setAlias: (chatId: string, alias: string) => Promise<void>;
   togglePin: (chatId: string) => void;
   toggleMute: (chatId: string) => void;
   chatRaw: (chatId: string) => Uint8Array | null;
@@ -255,13 +275,19 @@ export function useWorkspace(session: Session): Workspace {
   // ---------- Preferencias: fijados y silenciados ----------
   const [pinned, setPinned] = useState<string[]>([]);
   const [muted, setMutedState] = useState<string[]>([]);
+  const [aliasSealed, setAliasSealed] = useState<{ iv: string; ct: string } | null>(null);
+  const [aliases, setAliases] = useState<Record<string, string>>({});
   useEffect(() => {
     const { db } = getFirebase();
     const a = onSnapshot(
       doc(db, "prefs", uid),
       (snap) => {
-        const p = snap.data()?.pinned;
+        const data = snap.data();
+        const p = data?.pinned;
         setPinned(Array.isArray(p) ? p.filter((x): x is string => typeof x === "string") : []);
+        setAliasSealed(
+          typeof data?.aliasIv === "string" && typeof data?.aliasCt === "string" ? { iv: data.aliasIv, ct: data.aliasCt } : null
+        );
       },
       () => undefined
     );
@@ -278,6 +304,32 @@ export function useWorkspace(session: Session): Workspace {
       b();
     };
   }, [uid]);
+
+  useEffect(() => {
+    if (!aliasSealed) {
+      setAliases({});
+      return;
+    }
+    let cancelled = false;
+    void decryptAliases(ws, uid, aliasSealed.iv, aliasSealed.ct).then((a) => {
+      if (!cancelled) setAliases(a);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [aliasSealed, ws, uid]);
+
+  const setAlias = useCallback(
+    async (chatId: string, alias: string) => {
+      const next = { ...aliases };
+      const clean = alias.trim();
+      if (clean) next[chatId] = clean;
+      else delete next[chatId];
+      setAliases(next);
+      await saveAliases(getFirebase().db, ws, uid, next);
+    },
+    [aliases, ws, uid]
+  );
 
   // ---------- Conversaciones ----------
   const [chatDocs, setChatDocs] = useState<Raw[] | null>(null);
@@ -313,9 +365,32 @@ export function useWorkspace(session: Session): Workspace {
   const allChatsKey = allChatIds.join(",");
 
   // ---------- En línea ----------
+  const rtdb = useMemo(() => getRtdb(), []);
+
+  // Con RTDB: copia de miembros (la mantienen los administradores) y presencia.
+  const rtdbMirror = useMemo(() => {
+    // Conversaciones de antes: sus miembros son los fundadores originales.
+    const legacyMembers = session.founder
+      ? Array.from(new Set([uid, ...[...profiles.values()].filter((p) => p.founder && p.valid).map((p) => p.uid)]))
+      : [];
+    return (chatDocs ?? [])
+      .map((c) => ({
+        id: c.id,
+        members: Array.isArray(c.data.members)
+          ? (c.data.members as unknown[]).filter((m): m is string => typeof m === "string")
+          : legacyMembers,
+      }))
+      .filter((c) => c.members.length > 0);
+  }, [chatDocs, profiles, session.founder, uid]);
+  useRtdbMirrorSync(rtdb, admin, rtdbMirror);
+  const rtdbChatSet = useRtdbMembership(rtdb, allChatIds, uid);
+  const rtdbChatIds = useMemo(() => [...rtdbChatSet].sort(), [rtdbChatSet]);
+  const rtdbOnline = useRtdbPresence(rtdb, rtdbChatIds, uid);
+
+  // Sin RTDB: Firestore, como antes.
   const [presence, setPresence] = useState<PerChat>(new Map());
   useKeyedListeners(
-    allChatIds,
+    rtdb ? [] : allChatIds,
     (chatId) =>
       onSnapshot(
         collection(getFirebase().db, "chats", chatId, "presence"),
@@ -328,7 +403,7 @@ export function useWorkspace(session: Session): Workspace {
 
   // Mientras la web está a la vista, "en línea" en todos tus chats.
   useEffect(() => {
-    if (!allChatsKey) return;
+    if (rtdb || !allChatsKey) return;
     const ids = allChatsKey.split(",");
     const { db } = getFirebase();
     let show = loadSettings().showOnline;
@@ -371,14 +446,16 @@ export function useWorkspace(session: Session): Workspace {
       stop();
       leave();
     };
-  }, [allChatsKey, uid]);
+  }, [allChatsKey, uid, rtdb]);
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
+    if (rtdb) return;
     const t = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(t);
-  }, []);
+  }, [rtdb]);
   const online = useMemo(() => {
+    if (rtdb) return rtdbOnline;
     const set = new Set<string>();
     for (const docs of presence.values()) {
       for (const [m, d] of docs) {
@@ -388,7 +465,7 @@ export function useWorkspace(session: Session): Workspace {
       }
     }
     return set;
-  }, [presence, now, uid]);
+  }, [presence, now, uid, rtdb, rtdbOnline]);
   const isOnline = useCallback((id: string) => online.has(id), [online]);
 
   // ---------- Copias por chat: perfiles, fotos y hasta dónde leyó cada quien ----------
@@ -670,6 +747,55 @@ export function useWorkspace(session: Session): Workspace {
     [session.legacy, keysVersion]
   );
 
+  // ---------- Foto de cada chat (la ponen los administradores) ----------
+  const [photoDocs, setPhotoDocs] = useState<Map<string, { iv: string; data: Bytes } | null>>(new Map());
+  useKeyedListeners(
+    newChatIds,
+    (chatId) =>
+      onSnapshot(
+        doc(getFirebase().db, "chats", chatId, "photo", "current"),
+        (snap) => {
+          const d = snap.exists() ? snap.data() : null;
+          setPhotoDocs((prev) =>
+            new Map(prev).set(chatId, d && typeof d.iv === "string" && d.data instanceof Bytes ? { iv: d.iv, data: d.data } : null)
+          );
+        },
+        () => undefined
+      ),
+    (chatId) =>
+      setPhotoDocs((prev) => {
+        const next = new Map(prev);
+        next.delete(chatId);
+        return next;
+      })
+  );
+  const [chatPhotos, setChatPhotos] = useState<Map<string, string>>(new Map());
+  const photoCache = useRef(new Map<string, string>()); // chatId:iv -> url
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all(
+      [...photoDocs].map(async ([chatId, d]): Promise<[string, string] | null> => {
+        if (!d) return null;
+        const key = chatKeys.current.get(chatId)?.key;
+        if (!key) return null;
+        const ck = `${chatId}:${d.iv}`;
+        let url = photoCache.current.get(ck);
+        if (!url) {
+          const blob = await decryptChatPhoto(key, chatId, d.iv, d.data);
+          if (!blob) return null;
+          url = URL.createObjectURL(blob);
+          photoCache.current.set(ck, url);
+        }
+        return [chatId, url];
+      })
+    ).then((list) => {
+      if (!cancelled) setChatPhotos(new Map(list.filter((x): x is [string, string] => x !== null)));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [photoDocs, keysVersion]);
+
   // ---------- Nombre, proyecto y último mensaje (descifrados) ----------
   const metaCache = useRef(new Map<string, ChatMeta | null>());
   const lastCache = useRef(new Map<string, LastPreview | null>());
@@ -735,10 +861,25 @@ export function useWorkspace(session: Session): Workspace {
       const last = typeof d.lastCt === "string" ? lastCache.current.get(`${c.id}:${d.lastCt}`) ?? null : null;
       const members = legacy ? founders : (d.members as unknown[]).filter((m): m is string => typeof m === "string");
       const rawName = meta ? meta.name : "";
+      // Chat de dos: siempre el nombre del otro (no uno genérico).
+      const direct = !legacy && members.length === 2;
+      const other = direct ? members.find((m) => m !== uid) : undefined;
+      const otherName = other ? nameOf(other) : "";
+      const base = meta
+        ? direct && otherName && otherName !== "Miembro"
+          ? otherName
+          : displayName(rawName, members, uid, nameOf)
+        : key
+          ? "Conversación sin descifrar"
+          : "Esperando la llave…";
+      const alias = aliases[c.id] ?? "";
       return {
         id: c.id,
         rawName,
-        name: meta ? displayName(rawName, members, uid, nameOf) : key ? "Conversación sin descifrar" : "Esperando la llave…",
+        alias,
+        direct,
+        locked: d.locked === true,
+        name: alias || base,
         group: meta ? meta.group : "Otros",
         archived: d.archived === true,
         createdAt: toDate(d.createdAt),
@@ -752,7 +893,7 @@ export function useWorkspace(session: Session): Workspace {
         key,
       };
     });
-  }, [chatDocs, decVersion, keyFor, founders, uid, nameOf]);
+  }, [chatDocs, decVersion, keyFor, founders, uid, nameOf, aliases]);
 
   // ---------- Pendientes abiertos ----------
   const [legacyTaskDocs, setLegacyTaskDocs] = useState<Raw[]>([]);
@@ -843,14 +984,18 @@ export function useWorkspace(session: Session): Workspace {
 
   const lastMarked = useRef(new Map<string, string>());
   const markRead = useCallback(
-    (chat: ChatInfo) => {
+    (chat: ChatInfo, lastId?: string) => {
       const read = myLastRead[chat.id];
       const upToDate =
         (myReadCount[chat.id] ?? 0) === chat.count && !!read && (!chat.lastMessageAt || read >= chat.lastMessageAt);
-      // En los chats nuevos, los demás miembros ven tu "leído" en chats/{id}/reads.
+      // En los chats nuevos, los demás miembros ven tu "leído" en chats/{id}/reads,
+      // con el id del último mensaje que viste (la marca de agua de las palomitas).
       const mine = reads.get(chat.id)?.get(uid);
-      const sharedOk = chat.legacy || !reads.has(chat.id) || (mine?.n === chat.count && !!mine?.at);
-      const marker = `${chat.count}:${chat.lastMessageAt?.getTime() ?? 0}:${upToDate ? 1 : 0}${sharedOk ? 1 : 0}`;
+      const sharedOk =
+        chat.legacy ||
+        !reads.has(chat.id) ||
+        (mine?.n === chat.count && !!mine?.at && (!lastId || mine?.last === lastId));
+      const marker = `${chat.count}:${chat.lastMessageAt?.getTime() ?? 0}:${lastId ?? ""}:${upToDate ? 1 : 0}${sharedOk ? 1 : 0}`;
       if ((upToDate && sharedOk) || lastMarked.current.get(chat.id) === marker) return;
       lastMarked.current.set(chat.id, marker);
       const { db } = getFirebase();
@@ -863,17 +1008,36 @@ export function useWorkspace(session: Session): Workspace {
         ).catch(fail);
       }
       if (!chat.legacy && (!upToDate || !sharedOk)) {
-        void setDoc(doc(db, "chats", chat.id, "reads", uid), { n: chat.count, at: serverTimestamp() }).catch(fail);
+        void setDoc(
+          doc(db, "chats", chat.id, "reads", uid),
+          lastId ? { n: chat.count, at: serverTimestamp(), last: lastId } : { n: chat.count, at: serverTimestamp() },
+          { merge: true }
+        ).catch(fail);
       }
     },
     [uid, myLastRead, myReadCount, reads]
+  );
+
+  const readMarks = useCallback(
+    (chatId: string): Map<string, ReadMark> => {
+      const out = new Map<string, ReadMark>();
+      for (const [who, r] of reads.get(chatId) ?? []) {
+        out.set(who, {
+          n: typeof r.n === "number" ? r.n : 0,
+          at: toDate(r.at),
+          last: typeof r.last === "string" ? r.last : "",
+        });
+      }
+      return out;
+    },
+    [reads]
   );
 
   const togglePin = useCallback(
     (chatId: string) => {
       const next = pinned.includes(chatId) ? pinned.filter((p) => p !== chatId) : [chatId, ...pinned].slice(0, 20);
       setPinned(next);
-      void setDoc(doc(getFirebase().db, "prefs", uid), { pinned: next, updatedAt: serverTimestamp() }).catch(
+      void setDoc(doc(getFirebase().db, "prefs", uid), { pinned: next, updatedAt: serverTimestamp() }, { merge: true }).catch(
         () => undefined
       );
     },
@@ -884,9 +1048,9 @@ export function useWorkspace(session: Session): Workspace {
     (chatId: string) => {
       const next = muted.includes(chatId) ? muted.filter((m) => m !== chatId) : [...muted, chatId].slice(-200);
       setMutedState(next);
-      void setMuted(getFirebase().db, uid, next).catch(() => undefined);
+      void setMuted(getFirebase().db, uid, next, admin).catch(() => undefined);
     },
-    [muted, uid]
+    [muted, uid, admin]
   );
 
   const chatRaw = useCallback((chatId: string) => chatKeys.current.get(chatId)?.raw ?? null, []);
@@ -918,11 +1082,16 @@ export function useWorkspace(session: Session): Workspace {
     pinned,
     muted: mutedSet,
     openTasks,
+    aliases,
+    chatPhotos,
+    rtdbChats: rtdbChatSet,
     nameOf,
     unreadOf,
     mentionedIn,
     markRead,
+    readMarks,
     isOnline,
+    setAlias,
     togglePin,
     toggleMute,
     chatRaw,

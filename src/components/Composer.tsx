@@ -12,6 +12,11 @@
  *   empezar, luego enviar o descartar.
  * - Barra de "Respondiendo a…" cuando eliges responder un mensaje.
  * - En grupos, al escribir "@" aparece la lista de miembros para mencionar.
+ * - Opciones al enviar: "Texto oculto" (se lee manteniendo presionado; para
+ *   contraseñas y datos sensibles) y "Ver una vez" (fotos y videos).
+ * - Avisa a los demás si escribes o grabas audio.
+ * - En un chat donde solo escriben los administradores, un miembro ve un aviso
+ *   en lugar de la caja de texto.
  */
 
 import {
@@ -22,13 +27,15 @@ import {
   type ClipboardEvent,
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
-import { formatDuration, type FileInfo } from "@/lib/chats";
+import { canViewOnce, formatDuration, type FileInfo } from "@/lib/chats";
 import { normalizePhrase } from "@/lib/crypto";
 import { formatSize, type PreparedFile } from "@/lib/files";
 import { MAX_VOICE_SECONDS, useVoiceRecorder, type Recording } from "@/hooks/useVoiceRecorder";
+import type { Activity } from "@/hooks/useActivity";
 import { StickerPanel } from "./StickerPanel";
-import { CloseIcon, MicIcon, PaperclipIcon, SendIcon, SmileIcon, TrashIcon } from "./Icons";
+import { CloseIcon, EyeOffIcon, LockIcon, MicIcon, OnceIcon, PaperclipIcon, SendIcon, SmileIcon, TrashIcon } from "./Icons";
 
 export interface PendingAttachment {
   localId: string;
@@ -37,6 +44,11 @@ export interface PendingAttachment {
 }
 
 export const MAX_LENGTH = 4000;
+
+export interface SendOptions {
+  spoiler: boolean; // texto oculto
+  once: boolean; // fotos y videos de una vista
+}
 
 const MENTION_RE = /(^|\s)@([^\s@]{0,30})$/;
 
@@ -49,13 +61,14 @@ export function Composer({
   replyTo,
   focusSignal,
   keepKeyboard,
+  locked,
   onAddFiles,
   onRemoveAttachment,
   onCancelReply,
   onSend,
   onSendSticker,
   onSendVoice,
-  onTyping,
+  onActivity,
 }: {
   libKey: CryptoKey | null;
   uid: string;
@@ -65,15 +78,18 @@ export function Composer({
   replyTo: { author: string; preview: string } | null;
   focusSignal: number;
   keepKeyboard: boolean;
+  locked: boolean; // solo los administradores escriben aquí
   onAddFiles: (files: File[]) => void;
   onRemoveAttachment: (localId: string) => void;
   onCancelReply: () => void;
-  onSend: (text: string) => Promise<boolean>;
+  onSend: (text: string, options: SendOptions) => Promise<boolean>;
   onSendSticker: (file: FileInfo) => void;
   onSendVoice: (recording: Recording) => void;
-  onTyping: (typing: boolean) => void;
+  onActivity: (activity: Activity | null) => void;
 }) {
   const [draft, setDraft] = useState("");
+  const [spoiler, setSpoiler] = useState(false);
+  const [once, setOnce] = useState(false);
   const [stickersOpen, setStickersOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -90,8 +106,8 @@ export function Composer({
   }, [focusSignal]);
 
   useEffect(() => {
-    onTyping(draft.trim().length > 0);
-  }, [draft, onTyping]);
+    onActivity(voice.recording ? "voice" : draft.trim().length > 0 ? "text" : null);
+  }, [draft, voice.recording, onActivity]);
 
   // La caja de texto crece con el contenido (hasta un máximo).
   useLayoutEffect(() => {
@@ -102,6 +118,8 @@ export function Composer({
   }, [draft, voice.recording]);
 
   const canSend = draft.trim().length > 0 || attachments.length > 0;
+  const canSpoiler = draft.trim().length > 0 && attachments.length === 0;
+  const canOnce = attachments.some((a) => canViewOnce(a.prepared));
 
   const updateMention = (value: string, caret: number) => {
     if (mentionables.length === 0) return setMentionQuery(null);
@@ -130,10 +148,17 @@ export function Composer({
   const submit = async () => {
     const text = draft.trim();
     if ((!text && attachments.length === 0) || preparing) return;
+    const options: SendOptions = { spoiler: spoiler && canSpoiler, once: once && canOnce };
     setDraft("");
     setMentionQuery(null);
-    const ok = await onSend(text);
-    if (!ok) setDraft((current) => (current ? current : text));
+    setSpoiler(false);
+    setOnce(false);
+    const ok = await onSend(text, options);
+    if (!ok) {
+      setDraft((current) => (current ? current : text));
+      setSpoiler(options.spoiler);
+      setOnce(options.once);
+    }
   };
 
   const onSubmit = (e: FormEvent) => {
@@ -166,6 +191,30 @@ export function Composer({
   };
 
   const remaining = MAX_VOICE_SECONDS - voice.seconds;
+
+  if (locked) {
+    return (
+      <div className="flex shrink-0 items-center justify-center gap-2 border-t border-neutral-900 px-4 pb-[max(0.875rem,env(safe-area-inset-bottom))] pt-3.5 text-xs text-neutral-500">
+        <LockIcon className="h-4 w-4 shrink-0" />
+        Solo los administradores pueden enviar mensajes en este chat.
+      </div>
+    );
+  }
+
+  const chip = (on: boolean, label: string, icon: ReactNode, toggle: () => void) => (
+    <button
+      type="button"
+      onMouseDown={(e: { preventDefault(): void }) => e.preventDefault()}
+      onClick={toggle}
+      aria-pressed={on}
+      className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+        on ? "border-sky-500/60 bg-sky-500/15 text-sky-300" : "border-neutral-800 text-neutral-400 hover:text-neutral-200"
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
+  );
 
   return (
     <div className="shrink-0">
@@ -240,6 +289,13 @@ export function Composer({
             onSendSticker(file);
           }}
         />
+      )}
+
+      {!voice.recording && (canSpoiler || canOnce) && (
+        <div className="flex gap-2 border-t border-neutral-900 px-3 pt-2.5">
+          {canSpoiler && chip(spoiler, "Texto oculto", <EyeOffIcon className="h-3.5 w-3.5" />, () => setSpoiler((v) => !v))}
+          {canOnce && chip(once, "Ver una vez", <OnceIcon className="h-3.5 w-3.5" />, () => setOnce((v) => !v))}
+        </div>
       )}
 
       {voice.error && (
@@ -324,7 +380,7 @@ export function Composer({
               onKeyDown={onKeyDown}
               onPaste={onPaste}
               maxLength={MAX_LENGTH}
-              placeholder={attachments.length === 1 ? "Añade un comentario" : "Mensaje"}
+              placeholder={attachments.length === 1 ? "Añade un comentario" : spoiler ? "Texto oculto" : "Mensaje"}
               className="min-w-0 flex-1 resize-none rounded-2xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-base leading-snug outline-none transition-colors focus:border-neutral-600"
             />
             {canSend ? (

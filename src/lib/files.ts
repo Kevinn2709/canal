@@ -209,25 +209,33 @@ export async function uploadFile(
 const blobCache = new Map<string, Promise<Blob>>();
 const urlCache = new Map<string, Promise<string>>();
 
+/** Descarga, verifica y descifra un archivo, sin caché. */
+async function loadBlob(db: Firestore, store: FileStore, info: FileInfo): Promise<Blob> {
+  const [root, ...rest] = store.base;
+  const parts = await Promise.all(
+    Array.from({ length: info.chunks }, async (_, i) => {
+      const snap = await getDoc(doc(db, root, ...rest, info.id, "chunks", chunkId(i)));
+      const d = snap.data();
+      if (!d || !(d.data instanceof Bytes) || typeof d.iv !== "string") {
+        throw new Error("Falta una parte del archivo.");
+      }
+      return decryptBytes(store.key, d.iv, d.data.toUint8Array(), fileAad(info.id, i, info.chunks));
+    })
+  );
+  return new Blob(parts, { type: info.mime });
+}
+
+/** Para "ver una vez": no se guarda en la caché de la sesión. */
+export function getFileBlobNoCache(db: Firestore, store: FileStore, info: FileInfo): Promise<Blob> {
+  return loadBlob(db, store, info);
+}
+
 /** Descarga, verifica y descifra un archivo (con caché). */
 export function getFileBlob(db: Firestore, store: FileStore, info: FileInfo): Promise<Blob> {
   const ck = cacheKey(store, info.id);
   let pending = blobCache.get(ck);
   if (!pending) {
-    const [root, ...rest] = store.base;
-    pending = (async () => {
-      const parts = await Promise.all(
-        Array.from({ length: info.chunks }, async (_, i) => {
-          const snap = await getDoc(doc(db, root, ...rest, info.id, "chunks", chunkId(i)));
-          const d = snap.data();
-          if (!d || !(d.data instanceof Bytes) || typeof d.iv !== "string") {
-            throw new Error("Falta una parte del archivo.");
-          }
-          return decryptBytes(store.key, d.iv, d.data.toUint8Array(), fileAad(info.id, i, info.chunks));
-        })
-      );
-      return new Blob(parts, { type: info.mime });
-    })();
+    pending = loadBlob(db, store, info);
     blobCache.set(ck, pending);
     pending.catch(() => blobCache.delete(ck));
   }

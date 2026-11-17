@@ -11,13 +11,20 @@
  *   fundadores y siguen con la llave anterior. "General" usa la colección
  *   original "messages", así el historial no se mueve.
  * - Los mensajes (v: 2) guardan cifrado un JSON con el texto, el adjunto, la
- *   respuesta citada y las menciones.
+ *   respuesta citada y las menciones. Opcional: `sp` (texto oculto, se lee
+ *   manteniendo presionado) y `once` (foto o video que se ve una sola vez).
+ * - Foto del chat (la ponen los administradores): chats/{id}/photo/current,
+ *   cifrada con la llave del chat. `locked`: solo los administradores pueden
+ *   escribir en ese chat (las reglas lo hacen cumplir).
  */
 
 import {
+  Bytes,
   collection,
+  deleteDoc,
   doc,
   serverTimestamp,
+  setDoc,
   updateDoc,
   writeBatch,
   type CollectionReference,
@@ -26,7 +33,9 @@ import {
 import {
   base64ToBytes,
   bytesToBase64,
+  decryptBytes,
   decryptText,
+  encryptBytes,
   encryptText,
   importAesKey,
   messageAad,
@@ -54,8 +63,11 @@ export interface LastPreview {
 
 export interface ChatInfo {
   id: string;
-  name: string; // para mostrar
+  name: string; // para mostrar: tu alias, o el del otro en un chat de dos, o el guardado
   rawName: string; // el guardado
+  alias: string; // tu nombre personal para este chat ("" si no pusiste)
+  direct: boolean; // chat de dos personas (no de antes)
+  locked: boolean; // solo los administradores escriben
   group: string;
   archived: boolean;
   createdAt: Date | null;
@@ -87,8 +99,8 @@ export interface ReplyRef {
 }
 
 export type Payload =
-  | { t: "text"; text: string; re?: ReplyRef; m?: string[] }
-  | { t: "file"; text?: string; file: FileInfo; re?: ReplyRef; m?: string[] }
+  | { t: "text"; text: string; re?: ReplyRef; m?: string[]; sp?: boolean }
+  | { t: "file"; text?: string; file: FileInfo; re?: ReplyRef; m?: string[]; once?: boolean }
   | { t: "voice"; file: FileInfo; dur: number; re?: ReplyRef }
   | { t: "sticker"; file: FileInfo; re?: ReplyRef; lib?: boolean };
 
@@ -262,6 +274,35 @@ export async function setChatArchived(db: Firestore, chatId: string, archived: b
   await updateDoc(doc(db, "chats", chatId), { archived });
 }
 
+/** Solo los administradores pueden escribir (true) o todos (false). */
+export async function setChatLocked(db: Firestore, chatId: string, locked: boolean): Promise<void> {
+  await updateDoc(doc(db, "chats", chatId), { locked });
+}
+
+function chatPhotoAad(chatId: string): string {
+  return `canal:chatphoto:${chatId}`;
+}
+
+/** Pone (Blob) o quita (null) la foto del chat, cifrada con su llave. */
+export async function setChatPhoto(db: Firestore, key: CryptoKey, chatId: string, uid: string, photo: Blob | null): Promise<void> {
+  const ref = doc(db, "chats", chatId, "photo", "current");
+  if (!photo) {
+    await deleteDoc(ref);
+    return;
+  }
+  const sealed = await encryptBytes(key, new Uint8Array(await photo.arrayBuffer()), chatPhotoAad(chatId));
+  await setDoc(ref, { iv: sealed.iv, data: Bytes.fromUint8Array(sealed.data), by: uid, at: serverTimestamp() });
+}
+
+export async function decryptChatPhoto(key: CryptoKey, chatId: string, iv: string, data: Bytes): Promise<Blob | null> {
+  try {
+    const plain = await decryptBytes(key, iv, data.toUint8Array(), chatPhotoAad(chatId));
+    return new Blob([plain], { type: "image/jpeg" });
+  } catch {
+    return null;
+  }
+}
+
 /** Nombre para mostrar: el guardado o, en un chat sin nombre, los demás miembros. */
 export function displayName(rawName: string, members: string[], myUid: string, nameOf: (uid: string) => string): string {
   if (rawName) return rawName;
@@ -325,15 +366,18 @@ export function parsePayload(json: string): Payload | null {
   const withRe = (obj: Payload): Payload => (re ? { ...obj, re } : obj);
 
   if (p.t === "text" && typeof p.text === "string") {
-    return withRe(m.length ? { t: "text", text: p.text, m } : { t: "text", text: p.text });
+    const base: Payload = m.length ? { t: "text", text: p.text, m } : { t: "text", text: p.text };
+    return withRe(p.sp === true ? { ...base, sp: true } : base);
   }
 
   const file = parseFileInfo(p.file);
   if (!file) return null;
   if (p.t === "file") {
-    const base: Payload =
+    let base: Payload =
       typeof p.text === "string" && p.text ? { t: "file", text: p.text, file } : { t: "file", file };
-    return withRe(m.length && base.t === "file" ? { ...base, m } : base);
+    if (m.length && base.t === "file") base = { ...base, m };
+    if (p.once === true && base.t === "file" && canViewOnce(file)) base = { ...base, once: true };
+    return withRe(base);
   }
   if (p.t === "voice") {
     const dur = typeof p.dur === "number" && p.dur >= 0 ? p.dur : 0;
@@ -354,9 +398,13 @@ export function previewOf(payload: Payload | null): string {
   let text: string;
   switch (payload.t) {
     case "text":
-      text = payload.text;
+      text = payload.sp ? "🔒 Texto oculto" : payload.text;
       break;
     case "file":
+      if (payload.once) {
+        text = isVideo(payload.file) ? "Video de una vista" : "Foto de una vista";
+        break;
+      }
       text = payload.text || (isImage(payload.file) ? "Foto" : `Archivo: ${payload.file.name}`);
       if (payload.text && isImage(payload.file)) text = `Foto: ${payload.text}`;
       break;
@@ -387,4 +435,9 @@ export function isVideo(file: FileInfo): boolean {
 
 export function isAudio(file: FileInfo): boolean {
   return file.mime.startsWith("audio/");
+}
+
+/** Solo fotos y videos se pueden mandar para ver una vez. */
+export function canViewOnce(file: { mime: string }): boolean {
+  return (file.mime.startsWith("image/") && file.mime !== "image/svg+xml") || file.mime.startsWith("video/");
 }
