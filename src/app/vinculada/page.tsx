@@ -15,11 +15,12 @@
  *   → { type: "canal-attention" }      llamada entrante: abrir el panel
  */
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { onAuthStateChanged, type User } from "firebase/auth";
 import { getFirebase, isConfigured } from "@/lib/firebase";
 import { getLinked, onLinkedChange, type LinkedAccount } from "@/lib/linked";
 import { logoutHere } from "@/lib/logout";
+import { homeBarInset } from "@/lib/veil";
 import type { Session } from "@/lib/session";
 import { Login } from "@/components/Login";
 import { Unlock } from "@/components/Unlock";
@@ -46,6 +47,7 @@ export default function LinkedPage() {
   const [session, setSession] = useState<Session | null>(null);
   const [active, setActive] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const parentInset = useRef(0);
 
   // Dentro del panel: las pantallas ocupan el iframe y no repiten el margen
   // de la muesca del teléfono (ya lo pone la barra "Mensajes" de arriba).
@@ -78,21 +80,62 @@ export default function LinkedPage() {
     if (window.parent === window) return;
     const onMessage = (e: MessageEvent) => {
       if (e.origin !== window.location.origin || e.source !== window.parent) return;
-      const d = e.data as { type?: string; open?: unknown } | null;
-      if (d?.type === "canal-widget") setActive(d.open === true);
+      const d = e.data as { type?: string; open?: unknown; inset?: unknown } | null;
+      if (d?.type === "canal-widget") {
+        setActive(d.open === true);
+        if (typeof d.inset === "number") parentInset.current = d.inset;
+      }
     };
     window.addEventListener("message", onMessage);
     post({ type: "canal-hello" });
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  // Al perder el foco, avisa a la página de arriba: si ella tampoco lo tiene,
-  // se salió de la app con este chat abierto y tapa la pantalla.
+  // Velo de privacidad (lo pone la página de arriba):
+  // - Al perder el foco se avisa: si arriba tampoco lo tienen, se salió de la
+  //   app con este chat abierto.
+  // - Un dedo en la barra de inicio del iPhone (franja de abajo) se avisa al
+  //   momento: es el inicio del gesto para salir, antes de la foto del
+  //   selector de apps.
   useEffect(() => {
     if (window.parent === window) return;
+    // Dentro del iframe la zona segura vale 0: se usa la que manda la página
+    // de arriba.
+    const own = homeBarInset();
+    const edgeNow = () => {
+      const inset = Math.max(own, parentInset.current);
+      return inset >= 12 ? inset - 4 : 0;
+    };
+    let armed = false;
+    let startY = 0;
     const onBlur = () => post({ type: "canal-blur" });
+    const onTouchStart = (e: TouchEvent) => {
+      const edge = edgeNow();
+      if (!edge || e.touches.length !== 1) return;
+      const y = e.touches[0].clientY;
+      if (y >= window.innerHeight - edge) {
+        armed = true;
+        startY = y;
+        post({ type: "canal-edge", phase: "start" });
+      }
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (!armed) return;
+      armed = false;
+      const y = e.changedTouches[0]?.clientY ?? startY;
+      post({ type: "canal-edge", phase: "end", tap: e.type === "touchend" && Math.abs(y - startY) < 12 });
+    };
+    const capture = { capture: true, passive: true } as const;
     window.addEventListener("blur", onBlur);
-    return () => window.removeEventListener("blur", onBlur);
+    document.addEventListener("touchstart", onTouchStart, capture);
+    document.addEventListener("touchend", onTouchEnd, capture);
+    document.addEventListener("touchcancel", onTouchEnd, capture);
+    return () => {
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("touchstart", onTouchStart, capture);
+      document.removeEventListener("touchend", onTouchEnd, capture);
+      document.removeEventListener("touchcancel", onTouchEnd, capture);
+    };
   }, []);
 
   // Si la sesión abierta no es la cuenta vinculada (se desvinculó o se

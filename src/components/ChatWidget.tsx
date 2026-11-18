@@ -22,6 +22,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { LINKED_PATH } from "@/lib/scope";
+import { homeBarInset } from "@/lib/veil";
 
 export type WidgetMode = "inactive" | "locked" | "own" | "linked";
 
@@ -84,8 +85,14 @@ export function ChatWidget({
   }, [hint]);
 
   // ---------- Conversación con la cuenta vinculada (iframe) ----------
+  // También manda el alto de la barra de inicio del iPhone: dentro de un
+  // iframe env(safe-area-inset-bottom) vale 0, y el velo de privacidad lo
+  // necesita para reconocer el gesto de salir.
   const postOpen = useCallback(() => {
-    frame.current?.contentWindow?.postMessage({ type: "canal-widget", open: openRef.current }, window.location.origin);
+    frame.current?.contentWindow?.postMessage(
+      { type: "canal-widget", open: openRef.current, inset: homeBarInset() },
+      window.location.origin
+    );
   }, []);
 
   useEffect(() => {

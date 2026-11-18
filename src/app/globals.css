@@ -301,19 +301,22 @@ html[data-vista="monitor"] .boot-landing {
   display: none;
 }
 
-/* Velo de privacidad: se aplica en el mismo instante en que se sale de la app
-   y se desvanece al volver. Oscuro de sobra para no depender del desenfoque
-   (la vista previa del selector de apps a veces se toma antes). */
+/* Velo de privacidad: negro sólido (no depende del desenfoque, que tarda más
+   en dibujarse) con el ícono de la app al centro. Ya está en su propia capa
+   (will-change), así que mostrarlo es solo cambiar la opacidad: sale en el
+   siguiente cuadro. Se desvanece al volver. */
 .velo {
   position: fixed;
   inset: 0;
   z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   pointer-events: none;
   opacity: 0;
-  background: rgba(0, 0, 0, 0.8);
-  -webkit-backdrop-filter: blur(30px) saturate(1.2);
-  backdrop-filter: blur(30px) saturate(1.2);
-  transition: opacity 0.32s ease-out;
+  background: #000;
+  will-change: opacity;
+  transition: opacity 0.3s ease-out;
 }
 .velo[data-on="1"] {
   opacity: 1;
