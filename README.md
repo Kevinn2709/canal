@@ -208,6 +208,12 @@ Firebase y los papeles quedan igual.
     pantalla en ese mismo instante (sin esperar a React) y se desvanece al
     volver al monitor.
 
+- **0.8.1 · Tapar la pantalla al salir**: con sesión iniciada, al cambiar de
+  app o bloquear el teléfono se cubre la pantalla con un desenfoque oscuro en
+  ese mismo instante (también si sales con el chat vinculado abierto). No
+  aparece al tocar dentro del ícono de chat. Se apaga en Configuración →
+  "Tapar la pantalla al salir" (por dispositivo).
+
 ## Llamadas
 
 - **Cómo se cifran:** el audio y el video van por WebRTC, que siempre los

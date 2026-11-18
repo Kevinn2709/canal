@@ -17,7 +17,10 @@
  *   Monitor de dominios. Escribiendo `root` en "Filtrar dominio…" se abre la
  *   consola (sus chats). Si vincularon una cuenta de miembro, el ícono de chat
  *   del monitor abre esa cuenta. Si la web pasa a segundo plano, la consola
- *   vuelve sola al monitor, con un velo de desenfoque en ese mismo instante.
+ *   vuelve sola al monitor.
+ *
+ * Con sesión (cualquier papel), al salir de la app se tapa la pantalla con un
+ * desenfoque (VeloPrivacidad); no aparece al tocar dentro del ícono de chat.
  *
  * Tocar una notificación abre la web en "/#c=<chat>": en el monitor se guarda
  * ese chat y se abre directo al escribir `root`; en la landing se abre el
@@ -330,6 +333,8 @@ export default function Page() {
           </div>
         </div>
       )}
+
+      {session && <VeloPrivacidad />}
     </>
   );
 }

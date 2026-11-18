@@ -633,6 +633,14 @@ export function Settings({
           )}
 
           <Section title="Chats y llamadas (este dispositivo)">
+            {!linked && (
+              <Toggle
+                label="Tapar la pantalla al salir"
+                hint="Desenfoca la pantalla al cambiar de app o bloquear el teléfono, para que no se vean los chats en el selector de apps. No aparece mientras usas la web."
+                checked={settings.cover}
+                onChange={(v) => set({ cover: v })}
+              />
+            )}
             <Toggle
               label="Mantener el teclado abierto al enviar"
               hint="Después de enviar, puedes escribir el siguiente mensaje sin volver a tocar la caja de texto."

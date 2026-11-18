@@ -86,6 +86,15 @@ export default function LinkedPage() {
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
+  // Al perder el foco, avisa a la página de arriba: si ella tampoco lo tiene,
+  // se salió de la app con este chat abierto y tapa la pantalla.
+  useEffect(() => {
+    if (window.parent === window) return;
+    const onBlur = () => post({ type: "canal-blur" });
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, []);
+
   // Si la sesión abierta no es la cuenta vinculada (se desvinculó o se
   // cambió), se cierra y se olvida su llave en este dispositivo.
   useEffect(() => {

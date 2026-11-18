@@ -301,21 +301,23 @@ html[data-vista="monitor"] .boot-landing {
   display: none;
 }
 
-/* Velo de privacidad: se aplica en el mismo instante en que la app pasa a
-   segundo plano y se desvanece al volver. */
+/* Velo de privacidad: se aplica en el mismo instante en que se sale de la app
+   y se desvanece al volver. Oscuro de sobra para no depender del desenfoque
+   (la vista previa del selector de apps a veces se toma antes). */
 .velo {
   position: fixed;
   inset: 0;
   z-index: 100;
   pointer-events: none;
   opacity: 0;
-  background: rgba(0, 0, 0, 0.45);
-  -webkit-backdrop-filter: blur(28px) saturate(1.2);
-  backdrop-filter: blur(28px) saturate(1.2);
+  background: rgba(0, 0, 0, 0.8);
+  -webkit-backdrop-filter: blur(30px) saturate(1.2);
+  backdrop-filter: blur(30px) saturate(1.2);
   transition: opacity 0.32s ease-out;
 }
 .velo[data-on="1"] {
   opacity: 1;
+  pointer-events: auto;
   transition: none;
 }
 

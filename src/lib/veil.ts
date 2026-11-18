@@ -7,15 +7,18 @@
  * selector de apps no muestre los chats. Al volver, el velo se desvanece
  * sobre el monitor.
  *
- * Solo se activa con la app pasando a segundo plano (visibilitychange), no al
- * tocar dentro del ícono de chat ni al cambiar de campo.
+ * Se activa al salir de la app: la web pierde el foco (blur), pasa a segundo
+ * plano (visibilitychange) o se cierra (pagehide). No se activa al tocar
+ * dentro del ícono de chat (la cuenta vinculada va en un iframe) ni al
+ * cambiar de campo. Se puede apagar en Configuración (por dispositivo); el
+ * componente guarda si está encendido en data-enabled.
  */
 
 export const VEIL_ID = "velo-privacidad";
 
 export function showVeil(): void {
   const el = typeof document !== "undefined" ? document.getElementById(VEIL_ID) : null;
-  if (el) el.dataset.on = "1";
+  if (el && el.dataset.enabled !== "0") el.dataset.on = "1";
 }
 
 export function hideVeil(): void {
