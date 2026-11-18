@@ -9,12 +9,11 @@
  */
 
 import { useEffect, useState, type FormEvent } from "react";
-import { signOut } from "firebase/auth";
 import { doc, getDoc, onSnapshot } from "firebase/firestore";
 import { getFirebase } from "@/lib/firebase";
 import { securityCode } from "@/lib/crypto";
 import { acceptWrap, addLegacyKey, legacyRawFromPhrase, probeLegacy, type Session } from "@/lib/session";
-import { clearKeys } from "@/lib/keystore";
+import { logoutHere } from "@/lib/logout";
 import { ShieldIcon } from "./Icons";
 
 export function Waiting({ session, email, onSession }: { session: Session; email: string; onSession: (s: Session) => void }) {
@@ -125,7 +124,7 @@ export function Waiting({ session, email, onSession }: { session: Session; email
         {error && <p className="text-sm text-red-400">{error}</p>}
 
         <button
-          onClick={() => void clearKeys().then(() => signOut(getFirebase().auth))}
+          onClick={() => void logoutHere(session.uid)}
           className="w-full text-center text-xs text-neutral-500 underline-offset-2 hover:underline"
         >
           Cerrar sesión ({email})

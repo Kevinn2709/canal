@@ -1,37 +1,33 @@
-// Configuración de tu app web de Firebase.
-//
-// Dónde sacarla: Firebase -> engrane (Configuración del proyecto) -> General
-// -> "Tus apps" -> tu app web -> "Configuración del SDK" -> Config.
-//
-// Estos valores NO son secretos: solo identifican tu proyecto, y pueden estar
-// en un repositorio público. Lo que protege la conversación es el inicio de
-// sesión y las reglas de Firestore (archivo firestore.rules).
+/**
+ * firebase-config.ts — Configuración pública de Firebase.
+ *
+ * Se lee de las variables de entorno (en Vercel: Settings → Environment
+ * Variables). Así el mismo código sirve para el proyecto de pruebas y para el
+ * principal, cada uno con su propio Firebase. Estos valores no son secretos:
+ * viajan al navegador de todos modos; lo que protege los datos son las reglas
+ * y el cifrado de extremo a extremo.
+ *
+ * Variables:
+ *   NEXT_PUBLIC_FIREBASE_API_KEY
+ *   NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+ *   NEXT_PUBLIC_FIREBASE_PROJECT_ID
+ *   NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+ *   NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+ *   NEXT_PUBLIC_FIREBASE_APP_ID
+ *   NEXT_PUBLIC_FIREBASE_DATABASE_URL   (Realtime Database; opcional)
+ *
+ * Next.js solo reemplaza process.env.NEXT_PUBLIC_… cuando se escribe completo,
+ * por eso cada una aparece por separado.
+ */
 
-// ⬇️ BORRA este bloque de ejemplo y pega en su lugar el que te da Firebase
-//    (copia solo desde "const firebaseConfig = {" hasta "};").
-// Import the functions you need from the SDKs you need
-import { initializeApp } from "firebase/app";
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
+const databaseURL = process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL?.trim();
 
-// Your web app's Firebase configuration
-const firebaseConfig = {
-  apiKey: "AIzaSyCEgJUF_MFu9ADDg8OHxTYWe6VLE9PaP6M",
-  authDomain: "canal-bf662.firebaseapp.com",
-  projectId: "canal-bf662",
-  storageBucket: "canal-bf662.firebasestorage.app",
-  messagingSenderId: "468731667100",
-  appId: "1:468731667100:web:0a9365ef2d3749180f4359",
-  // Realtime Database (presencia y "escribiendo…" al instante). Se toma de la
-  // variable NEXT_PUBLIC_FIREBASE_DATABASE_URL (Vercel -> Settings ->
-  // Environment Variables). Sin ella, la app usa Firestore como antes.
-  ...(process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL
-    ? { databaseURL: process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL }
-    : {}),
+export const firebaseConfig = {
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY?.trim() ?? "",
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN?.trim() ?? "",
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID?.trim() ?? "",
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET?.trim() ?? "",
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID?.trim() ?? "",
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID?.trim() ?? "",
+  ...(databaseURL ? { databaseURL } : {}),
 };
-
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-// ⬆️ Hasta aquí. No borres la línea de abajo.
-
-export { firebaseConfig };

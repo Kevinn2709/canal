@@ -96,7 +96,7 @@ export function VoiceNote({
         type="button"
         onClick={() => void toggle()}
         disabled={state === "loading"}
-        className={`shrink-0 rounded-full p-2 ${mine ? "bg-neutral-900 text-white" : "bg-neutral-100 text-neutral-900"} disabled:opacity-50`}
+        className={`shrink-0 rounded-full p-2 ${mine ? "bg-white text-bubble-mine" : "bg-neutral-100 text-neutral-900"} disabled:opacity-50`}
         aria-label={playing ? "Pausar nota de voz" : "Reproducir nota de voz"}
       >
         {state === "loading" ? (
@@ -109,10 +109,10 @@ export function VoiceNote({
       </button>
       <div className="min-w-0 flex-1">
         <div
-          className={`h-1.5 w-full overflow-hidden rounded-full ${mine ? "bg-neutral-900/20" : "bg-white/20"}`}
+          className={`h-1.5 w-full overflow-hidden rounded-full ${mine ? "bg-white/30" : "bg-white/20"}`}
         >
           <div
-            className={`h-full rounded-full ${mine ? "bg-neutral-900" : "bg-white"}`}
+            className="h-full rounded-full bg-white"
             style={{ width: `${progress * 100}%` }}
           />
         </div>

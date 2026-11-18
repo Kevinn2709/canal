@@ -7,7 +7,343 @@ body {
   height: 100%;
   padding: 0;
   margin: 0;
-  background: #0a0a0a;
-  color: #f5f5f5;
+  background: #000;
+  color: #f5f5f7;
   -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/*
+ * Pantallas de la app dentro de un panel o ventana (ícono de chat, ventana de
+ * inicio de sesión): ocupan el panel, no toda la pantalla, y no repiten el
+ * margen de la muesca del teléfono (ya lo pone el panel).
+ */
+.in-panel .h-dvh {
+  height: 100%;
+}
+.in-panel .min-h-dvh {
+  min-height: 100%;
+}
+.in-panel [class*="pt-[max(0.625rem,env(safe-area-inset-top))]"] {
+  padding-top: 0.625rem !important;
+}
+.in-panel [class*="pt-[max(0.75rem,env(safe-area-inset-top))]"] {
+  padding-top: 0.75rem !important;
+}
+.in-panel [class*="pt-[max(3rem,env(safe-area-inset-top))]"] {
+  padding-top: 3rem !important;
+}
+.in-panel [class*="top-[max(1rem,env(safe-area-inset-top))]"] {
+  top: 1rem !important;
+}
+
+/* ------------------------------------------------------------------ */
+/* Vidrio (solo en la capa de controles: barras, hojas, barra de      */
+/* pestañas). El vidrio va en una capa propia detrás del contenido de */
+/* la barra, para no romper los elementos "fixed" que haya dentro.    */
+/* ------------------------------------------------------------------ */
+@layer components {
+  .glass {
+    background: rgba(22, 22, 24, 0.72);
+    -webkit-backdrop-filter: blur(24px) saturate(1.5);
+    backdrop-filter: blur(24px) saturate(1.5);
+  }
+  .glass-thick {
+    background: rgba(28, 28, 30, 0.86);
+    -webkit-backdrop-filter: blur(30px) saturate(1.4);
+    backdrop-filter: blur(30px) saturate(1.4);
+  }
+  .glass-edge-top {
+    box-shadow: inset 0 -0.5px 0 rgba(255, 255, 255, 0.12);
+  }
+  .glass-edge-bottom {
+    box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.12);
+  }
+  .glass-ring {
+    box-shadow:
+      inset 0 0 0 0.5px rgba(255, 255, 255, 0.14),
+      0 8px 30px rgba(0, 0, 0, 0.45);
+  }
+  /* Separador de las listas de iOS (media línea). */
+  .hairline {
+    border-color: rgba(84, 84, 88, 0.55);
+    border-bottom-width: 0.5px;
+  }
+}
+
+/* Contraste alto o menos transparencia: barras opacas. */
+@media (prefers-contrast: more), (prefers-reduced-transparency: reduce) {
+  .glass,
+  .glass-thick {
+    background: #1c1c1e;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Movimiento                                                          */
+/* ------------------------------------------------------------------ */
+
+/* Punto de estado que "respira" (monitor, landing). */
+.dot-live {
+  position: relative;
+}
+.dot-live::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: inherit;
+  animation: dot-breathe 2.4s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
+}
+@keyframes dot-breathe {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  70%,
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
+/* Entrada de una vista completa (monitor ↔ consola). Solo opacidad: un
+   transform convertiría a la vista en el marco de sus barras "fixed". */
+@keyframes vista-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Hojas (sheets) que suben desde abajo y fondo que se oscurece. */
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes sheet-down {
+  from {
+    transform: none;
+  }
+  to {
+    transform: translateY(100%);
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* Panel del ícono de chat: termina en translate3d(0,0,0) (no en "none") para
+   que las ventanas "fixed" de adentro sigan quedándose dentro del panel. */
+@keyframes widget-up {
+  from {
+    transform: translate3d(0, 100%, 0);
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+  }
+}
+@keyframes widget-pop {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 12px, 0) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* Clases de animación (en una capa de Tailwind para poder usar sm:, md:). */
+@layer utilities {
+  .vista-in {
+    animation: vista-in 0.2s ease-out both;
+  }
+  .anim-widget-up {
+    animation: widget-up 0.38s cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+  .anim-widget-pop {
+    animation: widget-pop 0.3s cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+  .anim-sheet-up {
+    animation: sheet-up 0.38s cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+  .anim-sheet-down {
+    animation: sheet-down 0.24s cubic-bezier(0.4, 0, 1, 1) both;
+  }
+  .anim-fade-in {
+    animation: fade-in 0.24s ease-out both;
+  }
+  .anim-fade-out {
+    animation: fade-out 0.2s ease-in both;
+  }
+  .anim-pop-in {
+    animation: pop-in 0.32s cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+}
+
+/* "Escribiendo…": tres puntos en ola, como en Mensajes. */
+@keyframes typing-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+.typing-dot {
+  animation: typing-dot 1.2s ease-in-out infinite;
+}
+
+/* Palomitas: se dibujan al cambiar de estado. */
+@keyframes tick-draw {
+  from {
+    stroke-dashoffset: 24;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.tick-draw path {
+  stroke-dasharray: 24;
+  animation: tick-draw 0.32s ease-out both;
+}
+
+/* Esqueleto de carga. */
+@keyframes shimmer {
+  from {
+    background-position: -200px 0;
+  }
+  to {
+    background-position: 200px 0;
+  }
+}
+.skeleton {
+  background: linear-gradient(90deg, #1c1c1e 0%, #2c2c2e 50%, #1c1c1e 100%) #1c1c1e;
+  background-size: 400px 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
+/* Barra de la landing de mantenimiento. */
+@keyframes landing-progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(150%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+/* Acordeón (preguntas de la landing): la altura se anima con grid. */
+.accordion-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.32s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.accordion-body[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+.accordion-body > div {
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------------ */
+/* Arranque sin parpadeo: mientras Firebase responde se muestra la     */
+/* landing o, si este equipo abrió el monitor la última vez, su        */
+/* esqueleto. Lo decide un script en <head> antes de pintar.           */
+/* ------------------------------------------------------------------ */
+.boot-monitor {
+  display: none;
+}
+html[data-vista="monitor"] .boot-monitor {
+  display: block;
+}
+html[data-vista="monitor"] .boot-landing {
+  display: none;
+}
+
+/* Velo de privacidad: se aplica en el mismo instante en que la app pasa a
+   segundo plano y se desvanece al volver. */
+.velo {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  pointer-events: none;
+  opacity: 0;
+  background: rgba(0, 0, 0, 0.45);
+  -webkit-backdrop-filter: blur(28px) saturate(1.2);
+  backdrop-filter: blur(28px) saturate(1.2);
+  transition: opacity 0.32s ease-out;
+}
+.velo[data-on="1"] {
+  opacity: 1;
+  transition: none;
+}
+
+/* Barra de desplazamiento discreta. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Menos movimiento: sin animaciones decorativas. */
+@media (prefers-reduced-motion: reduce) {
+  .dot-live::after,
+  .typing-dot,
+  .skeleton,
+  .tick-draw path {
+    animation: none !important;
+  }
+  .vista-in,
+  .anim-widget-up,
+  .anim-widget-pop,
+  .anim-sheet-up,
+  .anim-sheet-down,
+  .anim-pop-in {
+    animation-duration: 0.01s !important;
+  }
+  .accordion-body {
+    transition: none;
+  }
 }

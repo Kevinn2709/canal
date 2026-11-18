@@ -20,13 +20,16 @@ const csp = [
   // Realtime Database (presencia y "escribiendo…"): *.firebaseio.com o
   // *.firebasedatabase.app, por WebSocket.
   `connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://*.firebasedatabase.app wss://*.firebasedatabase.app${isDev ? " ws:" : ""}`,
-  "frame-src https://*.firebaseapp.com",
+  // 'self': el ícono de chat del monitor abre la cuenta vinculada (/vinculada)
+  // en un iframe de este mismo sitio.
+  "frame-src 'self' https://*.firebaseapp.com",
   "worker-src 'self'",
   "manifest-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
-  "frame-ancestors 'none'",
+  // Solo este mismo sitio puede meter estas páginas en un iframe.
+  "frame-ancestors 'self'",
 ].join("; ");
 
 /** @type {import('next').NextConfig} */
@@ -38,7 +41,7 @@ const nextConfig = {
         headers: [
           { key: "Content-Security-Policy", value: csp },
           { key: "X-Content-Type-Options", value: "nosniff" },
-          { key: "X-Frame-Options", value: "DENY" },
+          { key: "X-Frame-Options", value: "SAMEORIGIN" },
           { key: "Referrer-Policy", value: "no-referrer" },
           {
             key: "Permissions-Policy",

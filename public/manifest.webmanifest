@@ -1,6 +1,6 @@
 {
-  "name": "Chat",
-  "short_name": "Chat",
+  "name": "Tienda en línea",
+  "short_name": "Tienda",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

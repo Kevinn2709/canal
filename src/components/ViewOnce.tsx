@@ -41,7 +41,7 @@ export function ViewOnceCard({
       className="flex w-56 max-w-full items-center gap-3 rounded-xl bg-black/10 px-3 py-2.5 text-left disabled:cursor-default"
       aria-label={canOpen ? `Abrir ${kind.toLowerCase()} de una vista` : label}
     >
-      <OnceIcon className={`h-7 w-7 shrink-0 ${opened || openedByAll ? "opacity-40" : "text-sky-500"}`} />
+      <OnceIcon className={`h-7 w-7 shrink-0 ${opened || openedByAll ? "opacity-40" : mine ? "text-white" : "text-sky-500"}`} />
       <span className="min-w-0">
         <span className={`block text-sm font-medium ${opened || openedByAll ? "opacity-60" : ""}`}>{label}</span>
         <span className="block text-[11px] opacity-60">

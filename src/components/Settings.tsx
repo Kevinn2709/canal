@@ -43,6 +43,7 @@ import {
 } from "@/lib/push";
 import { generateVapidKeys } from "@/lib/webpush";
 import { APP_VERSION } from "@/lib/version";
+import { isLinkedScope } from "@/lib/scope";
 import type { Profile } from "@/lib/members";
 import type { Workspace } from "@/hooks/useWorkspace";
 import { PersonAvatar } from "./Avatar";
@@ -519,6 +520,8 @@ export function Settings({
   onSession,
   onBack,
   onLogout,
+  onExitConsole,
+  extraSections,
 }: {
   user: User;
   session: Session;
@@ -529,7 +532,10 @@ export function Settings({
   onSession: (s: Session) => void;
   onBack: () => void;
   onLogout: () => void;
+  onExitConsole?: () => void;
+  extraSections?: ReactNode;
 }) {
+  const linked = isLinkedScope();
   const [permError, setPermError] = useState<string | null>(null);
   const me = ws.me;
   const set = (patch: Partial<DeviceSettings>) => saveSettings({ ...settings, ...patch });
@@ -574,6 +580,23 @@ export function Settings({
             </div>
           </Section>
 
+          {onExitConsole && (
+            <button
+              type="button"
+              onClick={onExitConsole}
+              className="w-full rounded-xl border border-neutral-800 py-3 text-sm text-neutral-200 hover:bg-neutral-900"
+            >
+              Volver al monitor
+            </button>
+          )}
+
+          {linked && (
+            <p className="rounded-lg bg-neutral-900/60 px-3 py-2 text-xs text-neutral-400">
+              Esta es la cuenta vinculada al monitor. No usa notificaciones del sistema ni push en este dispositivo.
+            </p>
+          )}
+
+          {!linked && (
           <Section title="Notificaciones de este dispositivo">
             <Toggle
               label="Avisos dentro de la web"
@@ -607,6 +630,7 @@ export function Settings({
               {ws.admin ? " Las notificaciones con la web cerrada son solo para fundadores y administradores." : ""}
             </p>
           </Section>
+          )}
 
           <Section title="Chats y llamadas (este dispositivo)">
             <Toggle
@@ -620,12 +644,6 @@ export function Settings({
               hint="Solo lo ven quienes comparten un chat contigo. Si lo apagas, tampoco se guarda la hora."
               checked={settings.showOnline}
               onChange={(v) => set({ showOnline: v })}
-            />
-            <Toggle
-              label="Ocultar la pantalla al salir de la app"
-              hint="Desenfoca todo cuando cambias de app, bloqueas el teléfono o la ventana pierde el foco, para que no se vea en el selector de apps."
-              checked={settings.shield}
-              onChange={(v) => set({ shield: v })}
             />
             <Toggle
               label="Llamadas solo por relevo (ocultar mi IP)"
@@ -644,6 +662,8 @@ export function Settings({
               <Members session={session} ws={ws} />
             </Section>
           )}
+
+          {extraSections}
 
           <Section title="Seguridad">
             <Security session={session} onSession={onSession} />

@@ -106,8 +106,8 @@ Usa:
   teclado; deslizar un mensaje a la derecha lo responde; deslizar un chat de
   la lista a la izquierda muestra fijar / silenciar / leído / archivar; doble
   toque en un mensaje reacciona con 👍.
-- **Privacidad en pantalla:** al salir de la app o perder el foco se desenfoca
-  todo (se apaga en Configuración → Chats y llamadas). **Texto oculto**: se
+- **Privacidad en pantalla:** (0.7: se quitó el desenfoque con candado; la
+  consola del fundador vuelve sola al monitor al salir de la app). **Texto oculto**: se
   lee solo mientras lo mantienes presionado. **Fotos y videos de una vista**:
   se abren una vez; al cerrarse se libera la memoria y quedan como "Abierta";
   cuando todos los abrieron, se borra el archivo cifrado. Una web no puede
@@ -130,6 +130,83 @@ Usa:
 4. Redeploy (o merge de la rama nueva) y recarga la web. La presencia empieza
    a funcionar en cuanto un fundador o admin abre la web (copia los miembros
    de cada chat a Realtime Database).
+
+## Novedades de la 0.7 (probada antes en `canal-pruebas`)
+
+- **Landing de mantenimiento en `/`:** "Sitio en mantenimiento. En
+  construcción para un mejor servicio de los usuarios", con **Iniciar sesión**
+  arriba (correo, contraseña y frase, como siempre).
+- **Ícono de chat flotante:** sin sesión se ve pero solo avisa que hay que
+  iniciar sesión. **Miembros y admins** se quedan en la landing y el ícono
+  abre sus chats, con sus permisos de siempre.
+- **Fundadores → Monitor de dominios:** estado HTTP, SSL (días que le quedan)
+  y latencia de los dominios de `MONITOR_DOMAINS` (por defecto
+  `glamourgloow.com`), medidos por `/api/monitor` desde Vercel cada minuto.
+- **`root`:** escribir exactamente `root` en "Filtrar dominio…" limpia el
+  campo y abre la **consola del fundador** (sus chats, con todo lo de la 0.6).
+- **Cuenta vinculada:** en la consola, Configuración → Cuenta vinculada, se
+  elige una cuenta de miembro. Desde ese momento el ícono de chat del monitor
+  abre esa cuenta (corre en `/vinculada`, un iframe del mismo sitio con su
+  propia sesión de Firebase). La primera vez pide su correo, contraseña y
+  frase; queda recordada en ese dispositivo. La designación se guarda solo en
+  el dispositivo, nunca en Firestore.
+- **Retorno automático:** si la consola está abierta y la web pasa a segundo
+  plano o se bloquea la pantalla, se cierra (se quitan de la memoria los
+  mensajes descifrados; en Firestore no se borra nada), se corta Realtime
+  Database (tu presencia pasa a "desconectado") y se vuelve al monitor. No
+  pasa durante una llamada ni mientras eliges una foto o archivo.
+- **Push:** sigue siendo de la cuenta del fundador. La sesión vinculada nunca
+  crea ni cancela la suscripción push del dispositivo (es una sola por
+  dispositivo) y no muestra avisos del sistema. Al tocar una notificación en
+  el monitor, ese chat se abre directo al escribir `root`.
+- **Configuración de Firebase por variables de entorno** (antes estaba fija en
+  `src/lib/firebase-config.ts`): `NEXT_PUBLIC_FIREBASE_API_KEY`,
+  `…_AUTH_DOMAIN`, `…_PROJECT_ID`, `…_STORAGE_BUCKET`,
+  `…_MESSAGING_SENDER_ID`, `…_APP_ID` y `…_DATABASE_URL`. Para pasar la 0.7 al
+  proyecto principal hay que agregar esas variables allá con los valores de
+  `canal-bf662` y volver a poner sus UID en las reglas.
+- Encabezados: `frame-ancestors 'self'` y `X-Frame-Options: SAMEORIGIN` (antes
+  `none`/`DENY`), necesarios para el iframe de la cuenta vinculada. Otros
+  sitios siguen sin poder meter la web en un iframe.
+
+## Novedades de la 0.8 (diseño estilo iOS y rendimiento)
+
+Solo cambia la interfaz. El cifrado, el service worker (push), las conexiones a
+Firebase y los papeles quedan igual.
+
+- **Paleta de iOS en modo oscuro** en toda la app (`tailwind.config.ts`): los
+  grises `neutral-*` pasan a los grises del sistema de Apple y los acentos a
+  azul, verde, rojo y naranja del sistema.
+- **Vidrio solo en la capa de controles** (barras, hojas, barra de pestañas,
+  barra de escribir), con una versión opaca si el sistema pide más contraste.
+  Las tarjetas de contenido son sólidas.
+- **Landing**: portada tipo página de producto, avance por fases, novedades,
+  preguntas en acordeón y "Contactar soporte" (hoja con formulario). Tres
+  toques en el pie de página también abren el inicio de sesión. Si en Vercel
+  defines `NEXT_PUBLIC_SUPPORT_EMAIL`, el formulario abre el correo con el
+  mensaje listo; si no, solo confirma en pantalla.
+- **Monitor**: pestañas Resumen, Dominios e Historial; puntos de estado que
+  respiran; buscador estilo iOS (`root` sigue abriendo la consola); filtro por
+  estado; orden por nombre, latencia o SSL; detalle de cada dominio en una
+  hoja con gráfica de latencia y barras de uptime. El historial se guarda en
+  el equipo (localStorage) con las revisiones hechas mientras el monitor
+  estuvo abierto.
+- **Chat estilo Mensajes**: burbujas azules y grises que se juntan entre
+  mensajes seguidos y con "colita" en la última; palomitas y reloj vectoriales
+  (la palomita nueva se dibuja); "Escribiendo…" con tres puntos en ola; barra
+  superior y barra de escribir de vidrio.
+- **Rendimiento**:
+  - Cada mensaje está memorizado (`React.memo` con comparación propia) y las
+    acciones que recibe son estables (`useCallback`), así "escribiendo…" o la
+    presencia no vuelven a dibujar la lista.
+  - Consola, chats, inicio de sesión y espera de aprobación se cargan aparte
+    (`next/dynamic`) y se precargan cuando el teléfono está libre.
+  - Primer cuadro sin pantalla vacía: la landing sale del servidor; en el
+    equipo de un fundador, un script en `<head>` muestra el esqueleto del
+    monitor antes de pintar.
+  - Al pasar a segundo plano desde la consola, un velo con desenfoque cubre la
+    pantalla en ese mismo instante (sin esperar a React) y se desvanece al
+    volver al monitor.
 
 ## Llamadas
 

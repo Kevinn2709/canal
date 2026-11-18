@@ -35,7 +35,7 @@ import { formatSize, type PreparedFile } from "@/lib/files";
 import { MAX_VOICE_SECONDS, useVoiceRecorder, type Recording } from "@/hooks/useVoiceRecorder";
 import type { Activity } from "@/hooks/useActivity";
 import { StickerPanel } from "./StickerPanel";
-import { CloseIcon, EyeOffIcon, LockIcon, MicIcon, OnceIcon, PaperclipIcon, SendIcon, SmileIcon, TrashIcon } from "./Icons";
+import { ArrowUpIcon, CloseIcon, EyeOffIcon, LockIcon, MicIcon, OnceIcon, PlusIcon, SmileIcon, TrashIcon } from "./Icons";
 
 export interface PendingAttachment {
   localId: string;
@@ -194,7 +194,7 @@ export function Composer({
 
   if (locked) {
     return (
-      <div className="flex shrink-0 items-center justify-center gap-2 border-t border-neutral-900 px-4 pb-[max(0.875rem,env(safe-area-inset-bottom))] pt-3.5 text-xs text-neutral-500">
+      <div className="flex shrink-0 items-center justify-center gap-2 px-4 pb-[max(0.875rem,env(safe-area-inset-bottom))] pt-3.5 text-xs text-neutral-500">
         <LockIcon className="h-4 w-4 shrink-0" />
         Solo los administradores pueden enviar mensajes en este chat.
       </div>
@@ -208,7 +208,7 @@ export function Composer({
       onClick={toggle}
       aria-pressed={on}
       className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
-        on ? "border-sky-500/60 bg-sky-500/15 text-sky-300" : "border-neutral-800 text-neutral-400 hover:text-neutral-200"
+        on ? "border-sky-500/60 bg-sky-500/20 text-sky-300" : "border-white/10 bg-white/[0.04] text-neutral-400 hover:text-neutral-200"
       }`}
     >
       {icon}
@@ -219,15 +219,15 @@ export function Composer({
   return (
     <div className="shrink-0">
       {replyTo && (
-        <div className="flex items-center gap-2 border-t border-neutral-900 px-3 pt-2.5">
-          <div className="min-w-0 flex-1 rounded-lg border-l-2 border-sky-500 bg-neutral-900 px-2.5 py-1.5">
-            <p className="text-[11px] font-medium text-sky-500">Respondiendo a {replyTo.author}</p>
+        <div className="anim-pop-in flex items-center gap-2 px-3 pt-2.5">
+          <div className="min-w-0 flex-1 rounded-[12px] border-l-[3px] border-sky-500 bg-white/[0.07] px-3 py-1.5">
+            <p className="text-[12px] font-semibold text-sky-400">Respondiendo a {replyTo.author}</p>
             <p className="truncate text-xs text-neutral-400">{replyTo.preview}</p>
           </div>
           <button
             type="button"
             onClick={onCancelReply}
-            className="shrink-0 rounded-full p-1.5 text-neutral-400 hover:bg-neutral-900"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/10 text-neutral-300 hover:bg-white/15"
             aria-label="Cancelar respuesta"
           >
             <CloseIcon className="h-4 w-4" />
@@ -236,13 +236,13 @@ export function Composer({
       )}
 
       {(attachments.length > 0 || preparing) && (
-        <div className="flex gap-2 overflow-x-auto border-t border-neutral-900 px-3 pt-3">
+        <div className="no-scrollbar flex gap-2 overflow-x-auto px-3 pt-3">
           {attachments.map((a) => (
             <div key={a.localId} className="relative shrink-0">
               {a.previewUrl ? (
-                <img src={a.previewUrl} alt={a.prepared.name} className="h-16 w-16 rounded-lg object-cover" />
+                <img src={a.previewUrl} alt={a.prepared.name} className="h-16 w-16 rounded-[12px] object-cover" />
               ) : (
-                <div className="flex h-16 w-36 flex-col justify-center rounded-lg border border-neutral-800 bg-neutral-900 px-2.5">
+                <div className="flex h-16 w-36 flex-col justify-center rounded-[12px] bg-white/[0.07] px-2.5">
                   <span className="truncate text-xs text-neutral-200">{a.prepared.name}</span>
                   <span className="text-[10px] text-neutral-500">{formatSize(a.prepared.blob.size)}</span>
                 </div>
@@ -262,7 +262,7 @@ export function Composer({
       )}
 
       {suggestions.length > 0 && !voice.recording && (
-        <div className="border-t border-neutral-900 px-2 pt-2" role="listbox" aria-label="Mencionar a">
+        <div className="mx-2 mt-2 overflow-hidden rounded-[14px] bg-white/[0.06] py-1" role="listbox" aria-label="Mencionar a">
           {suggestions.map((m) => (
             <button
               key={m.uid}
@@ -271,7 +271,7 @@ export function Composer({
               aria-selected={false}
               onMouseDown={(e: { preventDefault(): void }) => e.preventDefault()}
               onClick={() => pickMention(m.name)}
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-neutral-200 hover:bg-neutral-900"
+              className="flex min-h-[44px] w-full items-center gap-2 px-3.5 py-2 text-left text-[15px] text-neutral-100 hover:bg-white/10"
             >
               <span className="text-sky-400">@</span>
               {m.name}
@@ -292,14 +292,14 @@ export function Composer({
       )}
 
       {!voice.recording && (canSpoiler || canOnce) && (
-        <div className="flex gap-2 border-t border-neutral-900 px-3 pt-2.5">
+        <div className="flex gap-2 px-3 pt-2.5">
           {canSpoiler && chip(spoiler, "Texto oculto", <EyeOffIcon className="h-3.5 w-3.5" />, () => setSpoiler((v) => !v))}
           {canOnce && chip(once, "Ver una vez", <OnceIcon className="h-3.5 w-3.5" />, () => setOnce((v) => !v))}
         </div>
       )}
 
       {voice.error && (
-        <div className="flex items-center justify-between gap-2 border-t border-neutral-900 px-4 pt-2 text-xs text-red-400">
+        <div className="flex items-center justify-between gap-2 px-4 pt-2 text-xs text-red-400">
           <span>{voice.error}</span>
           <button type="button" onClick={voice.clearError} className="shrink-0 underline">
             Cerrar
@@ -309,19 +309,19 @@ export function Composer({
 
       <form
         onSubmit={onSubmit}
-        className="flex items-end gap-1 border-t border-neutral-900 px-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 md:px-4"
+        className="flex items-end gap-1.5 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 md:px-4"
       >
         {voice.recording ? (
           <>
             <button
               type="button"
               onClick={() => voice.stop(false)}
-              className="shrink-0 rounded-full p-2.5 text-neutral-400 hover:bg-neutral-900 hover:text-red-400"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-neutral-800 text-red-400 hover:bg-neutral-700"
               aria-label="Descartar nota de voz"
             >
               <TrashIcon />
             </button>
-            <div className="flex min-w-0 flex-1 items-center gap-2.5 rounded-2xl border border-neutral-800 bg-neutral-900 px-4 py-2.5">
+            <div className="flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-[20px] border border-white/15 bg-black/30 px-3.5">
               <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-red-500" />
               <span className="text-sm tabular-nums text-neutral-200">{formatDuration(voice.seconds)}</span>
               <span className="truncate text-xs text-neutral-500">
@@ -331,10 +331,10 @@ export function Composer({
             <button
               type="button"
               onClick={() => voice.stop(true)}
-              className="shrink-0 rounded-full bg-neutral-100 p-2.5 text-neutral-900 hover:bg-white"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-sky-500 text-white transition-transform active:scale-90"
               aria-label="Enviar nota de voz"
             >
-              <SendIcon />
+              <ArrowUpIcon className="h-[18px] w-[18px]" />
             </button>
           </>
         ) : (
@@ -353,69 +353,71 @@ export function Composer({
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="shrink-0 rounded-full p-2.5 text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-neutral-800 text-neutral-300 transition-colors hover:bg-neutral-700"
               aria-label="Adjuntar foto o archivo"
             >
-              <PaperclipIcon />
+              <PlusIcon className="h-5 w-5" />
             </button>
             <button
               type="button"
               onClick={() => setStickersOpen((v) => !v)}
-              className={`shrink-0 rounded-full p-2.5 hover:bg-neutral-900 ${
-                stickersOpen ? "text-neutral-100" : "text-neutral-400 hover:text-neutral-200"
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full hover:bg-white/10 ${
+                stickersOpen ? "text-sky-400" : "text-neutral-400 hover:text-neutral-200"
               }`}
               aria-label="Stickers"
               aria-pressed={stickersOpen}
             >
               <SmileIcon />
             </button>
-            <textarea
-              ref={inputRef}
-              rows={1}
-              value={draft}
-              onChange={(e) => {
-                setDraft(e.target.value);
-                updateMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
-              }}
-              onKeyDown={onKeyDown}
-              onPaste={onPaste}
-              maxLength={MAX_LENGTH}
-              placeholder={attachments.length === 1 ? "Añade un comentario" : spoiler ? "Texto oculto" : "Mensaje"}
-              className="min-w-0 flex-1 resize-none rounded-2xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-base leading-snug outline-none transition-colors focus:border-neutral-600"
-            />
-            {canSend ? (
-              <button
-                type="submit"
-                disabled={preparing}
-                // Con "mantener el teclado abierto", tocar Enviar no le quita
-                // el foco a la caja de texto (así el teclado no se cierra).
-                onMouseDown={keepKeyboard ? (e: { preventDefault(): void }) => e.preventDefault() : undefined}
-                onTouchEnd={
-                  keepKeyboard
-                    ? (e: { preventDefault(): void }) => {
-                        e.preventDefault();
-                        void submit();
-                      }
-                    : undefined
-                }
-                className="shrink-0 rounded-full bg-neutral-100 p-2.5 text-neutral-900 transition-colors hover:bg-white disabled:opacity-30"
-                aria-label="Enviar"
-              >
-                <SendIcon />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  setStickersOpen(false);
-                  void voice.start();
+            <div className="flex min-w-0 flex-1 items-end rounded-[20px] border border-white/15 bg-black/30 transition-colors focus-within:border-white/25">
+              <textarea
+                ref={inputRef}
+                rows={1}
+                value={draft}
+                onChange={(e) => {
+                  setDraft(e.target.value);
+                  updateMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
                 }}
-                className="shrink-0 rounded-full p-2.5 text-neutral-300 hover:bg-neutral-900"
-                aria-label="Grabar nota de voz"
-              >
-                <MicIcon />
-              </button>
-            )}
+                onKeyDown={onKeyDown}
+                onPaste={onPaste}
+                maxLength={MAX_LENGTH}
+                placeholder={attachments.length === 1 ? "Añade un comentario" : spoiler ? "Texto oculto" : "Mensaje"}
+                className="min-w-0 flex-1 resize-none bg-transparent py-[6px] pl-3.5 pr-1 text-[17px] leading-[22px] text-neutral-50 outline-none placeholder:text-neutral-500"
+              />
+              {canSend ? (
+                <button
+                  type="submit"
+                  disabled={preparing}
+                  // Con "mantener el teclado abierto", tocar Enviar no le quita
+                  // el foco a la caja de texto (así el teclado no se cierra).
+                  onMouseDown={keepKeyboard ? (e: { preventDefault(): void }) => e.preventDefault() : undefined}
+                  onTouchEnd={
+                    keepKeyboard
+                      ? (e: { preventDefault(): void }) => {
+                          e.preventDefault();
+                          void submit();
+                        }
+                      : undefined
+                  }
+                  className="anim-pop-in m-[3px] flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-full bg-sky-500 text-white transition-transform active:scale-90 disabled:opacity-30"
+                  aria-label="Enviar"
+                >
+                  <ArrowUpIcon className="h-[17px] w-[17px]" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStickersOpen(false);
+                    void voice.start();
+                  }}
+                  className="m-[3px] flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-full text-neutral-400 hover:text-neutral-200"
+                  aria-label="Grabar nota de voz"
+                >
+                  <MicIcon className="h-[19px] w-[19px]" />
+                </button>
+              )}
+            </div>
           </>
         )}
       </form>

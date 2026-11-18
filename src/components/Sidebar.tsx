@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Sidebar.tsx — Lista de chats al estilo WhatsApp.
+ * Sidebar.tsx — Lista de chats (estilo Mensajes de iOS).
  *
  * - Cada fila: foto, nombre, hora, vista previa del último mensaje (quién y
  *   qué) y el número de mensajes sin leer. "@" si te mencionaron.
@@ -166,7 +166,7 @@ function ChatRow({
 
   return (
     <div
-      className="group relative overflow-hidden rounded-xl"
+      className="group relative overflow-hidden rounded-[14px]"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -200,8 +200,8 @@ function ChatRow({
       >
         <button
           onClick={onSelect}
-          className={`flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors [-webkit-touch-callout:none] [@media(pointer:coarse)]:select-none ${
-            selected ? "bg-neutral-800/80" : "hover:bg-neutral-900"
+          className={`flex w-full items-center gap-3 rounded-[14px] px-2.5 py-[9px] text-left transition-colors duration-150 [-webkit-touch-callout:none] active:bg-white/[0.06] [@media(pointer:coarse)]:select-none ${
+            selected ? "bg-white/[0.09]" : "hover:bg-white/[0.04]"
           }`}
           aria-label={`${chat.name}${unread ? `, ${unread} sin leer` : ""}`}
         >
@@ -209,20 +209,20 @@ function ChatRow({
           <span className="min-w-0 flex-1">
             <span className="flex items-baseline gap-2">
               <span
-                className={`min-w-0 flex-1 truncate text-[15px] ${unread ? "font-semibold text-neutral-50" : "text-neutral-200"} ${
+                className={`min-w-0 flex-1 truncate text-[16px] tracking-tight ${unread ? "font-semibold text-neutral-50" : "font-medium text-neutral-100"} ${
                   chat.metaOk ? "" : "italic text-neutral-500"
                 }`}
               >
                 {chat.name}
               </span>
               {chat.lastMessageAt && (
-                <span className={`shrink-0 text-[11px] ${unread && !muted ? "text-emerald-400" : "text-neutral-500"}`}>
+                <span className={`shrink-0 text-[13px] tabular-nums ${unread && !muted ? "text-sky-400" : "text-neutral-500"}`}>
                   {listTime(chat.lastMessageAt)}
                 </span>
               )}
             </span>
             <span className="mt-0.5 flex items-center gap-1.5">
-              <span className={`min-w-0 flex-1 truncate text-[13px] ${unread ? "text-neutral-300" : "text-neutral-500"}`}>
+              <span className={`min-w-0 flex-1 truncate text-[14px] ${unread ? "text-neutral-300" : "text-neutral-500"}`}>
                 {preview}
               </span>
               {tasks > 0 && (
@@ -238,14 +238,14 @@ function ChatRow({
               {muted && <BellOffIcon className="h-3.5 w-3.5 shrink-0 text-neutral-500" />}
               {pinned && <PinIcon className="h-3.5 w-3.5 shrink-0 text-neutral-500" />}
               {mentioned && (
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-sky-500 text-[11px] font-bold text-neutral-950" aria-label="te mencionaron">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-sky-500 text-[11px] font-bold text-white" aria-label="te mencionaron">
                   @
                 </span>
               )}
               {unread > 0 && (
                 <span
                   className={`min-w-[1.25rem] shrink-0 rounded-full px-1.5 text-center text-[11px] font-semibold leading-5 ${
-                    muted ? "bg-neutral-600 text-neutral-100" : "bg-emerald-500 text-neutral-950"
+                    muted ? "bg-neutral-600 text-neutral-100" : "bg-sky-500 text-white"
                   }`}
                   aria-label="sin leer"
                 >
@@ -280,21 +280,21 @@ function RowMenu({ chat, ws, onClose }: { chat: ChatInfo; ws: Workspace; onClose
         action();
         onClose();
       }}
-      className="block w-full px-4 py-3 text-left text-sm text-neutral-200 hover:bg-neutral-800"
+      className="block min-h-[48px] w-full px-4 py-3 text-left text-[17px] text-neutral-100 hover:bg-white/10"
     >
       {label}
     </button>
   );
   return (
-    <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/50 sm:items-center" onClick={onClose}>
+    <div className="anim-fade-in fixed inset-0 z-40 flex items-end justify-center bg-black/50 sm:items-center" onClick={onClose}>
       <div
         role="dialog"
         aria-label={`Opciones de ${chat.name}`}
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-sm rounded-t-2xl border border-neutral-800 bg-neutral-900 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:rounded-2xl"
+        className="anim-sheet-up w-full max-w-sm rounded-t-[28px] bg-neutral-900 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] ring-1 ring-white/10 sm:anim-pop-in sm:rounded-[28px]"
       >
         <p className="mb-2 truncate px-1 text-xs text-neutral-500">{chat.name}</p>
-        <div className="divide-y divide-neutral-800 overflow-hidden rounded-xl bg-neutral-950/60">
+        <div className="divide-y divide-white/[0.08] overflow-hidden rounded-[14px] bg-white/[0.06]">
           {item(pinned ? "Desfijar" : "Fijar arriba", () => ws.togglePin(chat.id))}
           {item(muted ? "Quitar silencio" : "Silenciar", () => ws.toggleMute(chat.id))}
           {ws.unreadOf(chat) > 0 && item("Marcar como leído", () => ws.markRead(chat))}
@@ -303,7 +303,7 @@ function RowMenu({ chat, ws, onClose }: { chat: ChatInfo; ws: Workspace; onClose
               void setChatArchived(getFirebase().db, chat.id, !chat.archived).catch(() => undefined);
             })}
         </div>
-        <button type="button" onClick={onClose} className="mt-2 w-full rounded-xl py-2.5 text-sm text-neutral-400 hover:bg-neutral-800">
+        <button type="button" onClick={onClose} className="mt-2 min-h-[50px] w-full rounded-[14px] bg-white/[0.06] text-[17px] font-semibold text-sky-400 hover:bg-white/10">
           Cancelar
         </button>
       </div>
@@ -322,6 +322,7 @@ export function Sidebar({
   onOpenTasks,
   onOpenSettings,
   onCreate,
+  onExitConsole,
 }: {
   ws: Workspace;
   myUid: string;
@@ -333,6 +334,8 @@ export function Sidebar({
   onOpenTasks: () => void;
   onOpenSettings: () => void;
   onCreate: () => void;
+  /** Consola del fundador: volver al monitor. */
+  onExitConsole?: () => void;
 }) {
   const [filter, setFilter] = useState<Filter>({ kind: "all" });
   const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -373,8 +376,8 @@ export function Sidebar({
         key={`${f.kind}:${f.kind === "group" ? f.name : ""}`}
         type="button"
         onClick={() => setFilter(f)}
-        className={`shrink-0 rounded-full px-3 py-1 text-xs transition-colors ${
-          on ? "bg-emerald-500/15 text-emerald-300" : "bg-neutral-900 text-neutral-400 hover:text-neutral-200"
+        className={`shrink-0 rounded-full px-3.5 py-1.5 text-[13px] font-medium transition-colors duration-200 ${
+          on ? "bg-sky-500 text-white" : "bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
         }`}
         aria-pressed={on}
       >
@@ -388,15 +391,27 @@ export function Sidebar({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center gap-2 px-3 pb-2 pt-[max(0.75rem,env(safe-area-inset-top))]">
+      <div className="flex shrink-0 items-center gap-1 px-3 pb-2 pt-[max(0.75rem,env(safe-area-inset-top))]">
         <button onClick={onOpenSettings} className="rounded-full" aria-label="Tu perfil y configuración">
           <PersonAvatar ws={ws} uid={myUid} size={34} />
         </button>
-        <h1 className="flex-1 pl-1 text-xl font-semibold tracking-tight">Chats</h1>
+        <h1 className="flex-1 pl-1.5 text-[28px] font-bold leading-none tracking-tight">Chats</h1>
+        {onExitConsole && (
+          <button
+            onClick={onExitConsole}
+            className="flex h-10 w-10 items-center justify-center rounded-full text-sky-500 transition-colors hover:bg-white/10"
+            aria-label="Volver al monitor"
+            title="Volver al monitor"
+          >
+            <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+              <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+        )}
         {ws.admin && (
           <button
             onClick={onCreate}
-            className="rounded-full p-2 text-neutral-300 transition-colors hover:bg-neutral-900"
+            className="flex h-10 w-10 items-center justify-center rounded-full text-sky-500 transition-colors hover:bg-white/10"
             aria-label="Nuevo chat"
           >
             <PlusIcon />
@@ -404,7 +419,7 @@ export function Sidebar({
         )}
         <button
           onClick={onOpenSettings}
-          className={`relative rounded-full p-2 transition-colors hover:bg-neutral-900 ${settingsSelected ? "text-neutral-100" : "text-neutral-300"}`}
+          className={`relative flex h-10 w-10 items-center justify-center rounded-full transition-colors hover:bg-white/10 ${settingsSelected ? "text-sky-300" : "text-sky-500"}`}
           aria-label="Configuración"
         >
           <GearIcon />
@@ -415,13 +430,13 @@ export function Sidebar({
       {ws.pending.length > 0 && (
         <button
           onClick={onOpenSettings}
-          className="mx-3 mb-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-left text-xs text-amber-300"
+          className="mx-3 mb-2 rounded-[14px] bg-amber-500/15 px-3.5 py-2.5 text-left text-[13px] text-amber-300"
         >
           {ws.pending.length === 1 ? "Una cuenta nueva espera" : `${ws.pending.length} cuentas nuevas esperan`} tu aprobación →
         </button>
       )}
 
-      <div className="flex shrink-0 gap-1.5 overflow-x-auto px-3 pb-2 [scrollbar-width:none]">
+      <div className="no-scrollbar flex shrink-0 gap-2 overflow-x-auto px-3 pb-2.5">
         {chip("Todos", { kind: "all" })}
         {chip("No leídos", { kind: "unread" }, unreadChats.length)}
         {projects.map((p) => chip(p, { kind: "group", name: p }))}
@@ -432,14 +447,14 @@ export function Sidebar({
         {filter.kind === "all" && (
           <button
             onClick={onOpenTasks}
-            className={`mb-1 flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors ${
-              tasksSelected ? "bg-neutral-800/80" : "hover:bg-neutral-900"
+            className={`mb-1 flex w-full items-center gap-3 rounded-[14px] px-2.5 py-[9px] text-left transition-colors ${
+              tasksSelected ? "bg-white/[0.09]" : "hover:bg-white/[0.04]"
             }`}
           >
             <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-amber-500/10 text-amber-400">
               <TasksIcon />
             </span>
-            <span className="flex-1 text-[15px] text-neutral-200">Pendientes</span>
+            <span className="flex-1 text-[16px] font-medium tracking-tight text-neutral-100">Pendientes</span>
             {totalTasks > 0 && (
               <span className="rounded-full bg-amber-500 px-1.5 text-[11px] font-semibold text-neutral-950">{totalTasks}</span>
             )}

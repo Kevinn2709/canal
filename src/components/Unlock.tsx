@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { signOut, type User } from "firebase/auth";
+import type { User } from "firebase/auth";
 import { getFirebase } from "@/lib/firebase";
 import { normalizePhrase, phraseProblem } from "@/lib/crypto";
 import {
@@ -30,8 +30,8 @@ import {
   type Role,
   type Session,
 } from "@/lib/session";
-import { clearKeys, forgetKeys, keyId, loadKey, saveKey } from "@/lib/keystore";
-import { clearFileCache } from "@/lib/files";
+import { forgetKeys, keyId, loadKey, saveKey } from "@/lib/keystore";
+import { logoutHere } from "@/lib/logout";
 
 type Mode = "loading" | "unauthorized" | "offline" | "unlock" | "setup" | "reset";
 
@@ -45,7 +45,19 @@ export async function rememberOnDevice(session: Session, remember: boolean): Pro
   else await forgetKeys(session.uid);
 }
 
-export function Unlock({ user, onReady }: { user: User; onReady: (s: Session) => void }) {
+export function Unlock({
+  user,
+  onReady,
+  defaultRemember = false,
+  note,
+}: {
+  user: User;
+  onReady: (s: Session) => void;
+  /** Marcar de entrada "Recordar en este dispositivo" (cuenta vinculada). */
+  defaultRemember?: boolean;
+  /** Texto extra arriba (por ejemplo, de qué cuenta se trata). */
+  note?: string;
+}) {
   const [mode, setMode] = useState<Mode>("loading");
   const [role, setRole] = useState<Role>({ founder: false, admin: false });
   const founder = role.founder;
@@ -56,7 +68,7 @@ export function Unlock({ user, onReady }: { user: User; onReady: (s: Session) =>
   const [oldPhrase, setOldPhrase] = useState("");
   const [skipOld, setSkipOld] = useState(false);
   const [show, setShow] = useState(false);
-  const [remember, setRemember] = useState(false);
+  const [remember, setRemember] = useState(defaultRemember);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -162,9 +174,7 @@ export function Unlock({ user, onReady }: { user: User; onReady: (s: Session) =>
   };
 
   const logout = async () => {
-    clearFileCache();
-    await clearKeys();
-    await signOut(getFirebase().auth);
+    await logoutHere(user.uid);
   };
 
   const copyUid = () => {
@@ -190,6 +200,7 @@ export function Unlock({ user, onReady }: { user: User; onReady: (s: Session) =>
   return (
     <div className="flex min-h-dvh items-center justify-center bg-neutral-950 px-4 py-8 text-neutral-200">
       <div className="w-full max-w-sm space-y-4">
+        {note && <p className="rounded-md bg-neutral-900 px-3 py-2 text-xs text-neutral-400">{note}</p>}
         {mode === "unauthorized" && (
           <>
             <h1 className="text-lg font-medium tracking-tight">Tu cuenta aún no tiene acceso</h1>

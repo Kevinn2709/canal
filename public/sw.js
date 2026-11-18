@@ -9,13 +9,41 @@
  * dentro del aviso cifrado de Web Push y solo sirve para abrir ese chat.
  *
  * No guarda la app en caché: siempre se carga la versión más reciente.
+ *
+ * Versión 0.7: la app de chats puede no estar abierta aunque la web sí lo esté
+ * (landing, monitor de dominios). Por eso:
+ * - Solo se evita repetir un aviso si la ventana tiene la app de chats
+ *   montada (la URL lleva "?app"), que es donde suenan las llamadas.
+ * - Nunca se cuenta la página /vinculada (la cuenta de miembro dentro del
+ *   ícono de chat del monitor): los avisos son de la cuenta principal.
  */
 
-const APP_NAME = "Chat";
+const APP_NAME = "Tienda en linea";
 const ICON = "/notification-icon.png";
 const BADGE = "/badge-96.png";
 
 self.addEventListener("install", () => self.skipWaiting());
+
+/** Ventanas de la página principal (no el iframe de la cuenta vinculada). */
+function mainWindows(list) {
+  return list.filter((w) => {
+    try {
+      const u = new URL(w.url);
+      return w.frameType !== "nested" && !u.pathname.startsWith("/vinculada");
+    } catch (e) {
+      return false;
+    }
+  });
+}
+
+/** ¿Esta ventana tiene la app de chats montada? */
+function hasApp(w) {
+  try {
+    return new URL(w.url).searchParams.has("app");
+  } catch (e) {
+    return false;
+  }
+}
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
 function buildNotification(data) {
@@ -25,9 +53,9 @@ function buildNotification(data) {
   const chatId = typeof data.c === "string" ? data.c : "";
   if (data.k) {
     // Llamada entrante: se queda a la vista hasta que la toques.
-    return { title: APP_NAME, body: "Llamada entrante", tag: `call-${chatId}`, chatId, call: true };
+    return { title: APP_NAME, body: "Datos actualizados", tag: `call-${chatId}`, chatId, call: true };
   }
-  return { title: APP_NAME, body: "Nuevo mensaje", tag: chatId ? `c-${chatId}` : "canal", chatId };
+  return { title: APP_NAME, body: "Nuevo Pedido Registrado", tag: chatId ? `c-${chatId}` : "canal", chatId };
 }
 
 self.addEventListener("push", (event) => {
@@ -52,10 +80,11 @@ self.addEventListener("push", (event) => {
       });
       // Si ya tienes ese chat abierto y a la vista, no hace falta el aviso.
       // Una llamada suena dentro de la web si está a la vista.
-      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const windows = mainWindows(await self.clients.matchAll({ type: "window", includeUncontrolled: true }));
       const viewing = windows.some(
         (w) =>
           w.visibilityState === "visible" &&
+          hasApp(w) &&
           (n.call || (w.focused && n.chatId && w.url.includes(`#c=${n.chatId}`)))
       );
       if (viewing) {
@@ -73,7 +102,7 @@ self.addEventListener("notificationclick", (event) => {
   const target = chatId ? `/#c=${chatId}` : "/";
   event.waitUntil(
     (async () => {
-      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const windows = mainWindows(await self.clients.matchAll({ type: "window", includeUncontrolled: true }));
       for (const w of windows) {
         if ("focus" in w) {
           w.postMessage({ type: "open-chat", chatId });

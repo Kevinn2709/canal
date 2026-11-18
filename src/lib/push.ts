@@ -15,6 +15,7 @@
  *   inicio y se abrió desde ese ícono (iOS 16.4 o posterior).
  */
 
+import { isLinkedScope } from "./scope";
 import { doc, getDoc, setDoc, updateDoc, type Firestore } from "firebase/firestore";
 
 // ---------------------------------------------------------------------------
@@ -28,10 +29,13 @@ export interface DeviceSettings {
   keepKeyboard: boolean; // al enviar, el teclado sigue abierto
   showOnline: boolean; // los demás ven cuando estás "en línea"
   relayCalls: boolean; // llamadas siempre por el servidor de relevo (oculta tu IP)
-  shield: boolean; // tapar la pantalla (desenfoque) al salir de la app o perder el foco
 }
 
-const SETTINGS_KEY = "canal:ajustes";
+// La sesión vinculada guarda sus ajustes aparte: así no cambia los del
+// fundador en este mismo dispositivo.
+function settingsKey(): string {
+  return isLinkedScope() ? "canal:ajustes:vinculada" : "canal:ajustes";
+}
 const DEFAULTS: DeviceSettings = {
   inApp: true,
   sound: true,
@@ -39,13 +43,12 @@ const DEFAULTS: DeviceSettings = {
   keepKeyboard: true,
   showOnline: true,
   relayCalls: false,
-  shield: true,
 };
 const SETTINGS_EVENT = "canal-ajustes";
 
 export function loadSettings(): DeviceSettings {
   try {
-    const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") as Partial<DeviceSettings>;
+    const raw = JSON.parse(localStorage.getItem(settingsKey()) ?? "{}") as Partial<DeviceSettings>;
     const out = { ...DEFAULTS };
     for (const k of Object.keys(DEFAULTS) as (keyof DeviceSettings)[]) {
       if (typeof raw[k] === "boolean") out[k] = raw[k] as boolean;
@@ -58,7 +61,7 @@ export function loadSettings(): DeviceSettings {
 
 export function saveSettings(settings: DeviceSettings): void {
   try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    localStorage.setItem(settingsKey(), JSON.stringify(settings));
   } catch {
     // Sin almacenamiento: los ajustes duran hasta recargar.
   }
@@ -118,6 +121,7 @@ export function registerServiceWorker(): Promise<ServiceWorkerRegistration | nul
 
 /** Muestra un aviso del sistema (con la web abierta). */
 export async function showSystemNotification(title: string, body: string, chatId: string): Promise<void> {
+  if (isLinkedScope()) return; // la cuenta vinculada no avisa fuera de la web
   if (notificationPermission() !== "granted") return;
   const reg = await registerServiceWorker();
   const options = { body, tag: `c-${chatId}`, icon: "/notification-icon.png", badge: "/badge-96.png", data: { chatId } };
@@ -207,6 +211,7 @@ async function writeSubscription(db: Firestore, uid: string, sub: PushSubscripti
  * usuario (iPhone lo exige para pedir permiso). Lanza Error con mensaje.
  */
 export async function enablePush(db: Firestore, uid: string, allowed: boolean): Promise<void> {
+  if (isLinkedScope()) throw new Error("La cuenta vinculada no usa notificaciones push.");
   if (!allowed) throw new Error("Las notificaciones push son solo para administradores.");
   if (!pushSupported()) {
     throw new Error(
@@ -247,6 +252,7 @@ export async function enablePush(db: Firestore, uid: string, allowed: boolean): 
 }
 
 export async function disablePush(db: Firestore, uid: string): Promise<void> {
+  if (isLinkedScope()) return;
   const sub = await currentSubscription();
   if (!sub) return;
   const endpoint = sub.endpoint;
@@ -256,6 +262,7 @@ export async function disablePush(db: Firestore, uid: string): Promise<void> {
 
 /** Al abrir la app: renueva la suscripción de este dispositivo si ya estaba activa. */
 export async function refreshPush(db: Firestore, uid: string): Promise<boolean> {
+  if (isLinkedScope()) return false;
   if (notificationPermission() !== "granted") return false;
   const sub = await currentSubscription();
   if (!sub) return false;
@@ -280,6 +287,10 @@ export async function setMuted(db: Firestore, uid: string, muted: string[], canP
  * desactiva y se borran sus suscripciones guardadas.
  */
 export async function dropPushIfNotAllowed(db: Firestore, uid: string): Promise<void> {
+  // La suscripción push es UNA por dispositivo. En la sesión vinculada (el
+  // miembro que abre el monitor del fundador) cancelarla dejaría al fundador
+  // sin notificaciones: aquí nunca se toca.
+  if (isLinkedScope()) return;
   const sub = await currentSubscription();
   if (sub) await sub.unsubscribe().catch(() => undefined);
   const ref = doc(db, "push", uid);

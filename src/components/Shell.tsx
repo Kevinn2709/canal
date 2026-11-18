@@ -11,15 +11,27 @@
  * - Avisos de mensajes nuevos, contador en el título de la pestaña y en el
  *   ícono de la pantalla de inicio.
  * - Llamadas 1 a 1: suenan aquí estés donde estés dentro de la web.
+ *
+ * Dónde se muestra (versión 0.7):
+ * - Consola del fundador: a pantalla completa (se entra desde el monitor).
+ * - Miembros y admins: dentro del ícono de chat de la landing (`embedded`).
+ *   Con el panel cerrado (`active` = false) no queda ningún chat abierto, así
+ *   que no se marca nada como leído sin verlo.
+ * - Cuenta vinculada (/vinculada): igual que embebido, pero nunca toca el push
+ *   del dispositivo, que pertenece al fundador.
+ * - Mientras está montada la app principal, la URL lleva "?app": así el
+ *   service worker sabe que aquí suenan las llamadas y que este chat se ve.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { signOut, type User } from "firebase/auth";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import type { User } from "firebase/auth";
 import { collection, getDocs } from "firebase/firestore";
 import { getFirebase } from "@/lib/firebase";
 import { createChat, renameChat, type ChatInfo, type ChatMeta, type KeyTarget } from "@/lib/chats";
-import { clearFileCache } from "@/lib/files";
-import { clearKeys, saveNotificationNames } from "@/lib/keystore";
+import { saveNotificationNames } from "@/lib/keystore";
+import { logoutHere } from "@/lib/logout";
+import { isLinkedScope } from "@/lib/scope";
+import { holdConsole, releaseConsole } from "@/lib/consoleGuard";
 import {
   dropPushIfNotAllowed,
   loadSettings,
@@ -31,7 +43,7 @@ import {
 import { migrateLegacyStickers } from "@/lib/stickers";
 import { unlockAudio } from "@/lib/sound";
 import type { Session } from "@/lib/session";
-import { useWorkspace } from "@/hooks/useWorkspace";
+import { useWorkspace, type Workspace } from "@/hooks/useWorkspace";
 import { useNotifier } from "@/hooks/useNotifier";
 import { useCalls } from "@/hooks/useCalls";
 import { CallScreen } from "./CallScreen";
@@ -42,6 +54,7 @@ import { AllTasks } from "./Tasks";
 import { Settings } from "./Settings";
 import { ChatAvatar } from "./Avatar";
 import { LockIcon } from "./Icons";
+import { ChatListSkeleton } from "./Skeletons";
 
 type Dialog = { mode: "create" } | { mode: "edit"; chat: ChatInfo } | null;
 type View = { type: "chat"; id: string } | { type: "tasks" } | { type: "settings" } | null;
@@ -54,8 +67,54 @@ function viewFromHash(): View {
   return match ? { type: "chat", id: match[1] } : null;
 }
 
-export function Shell({ user, session, onSession }: { user: User; session: Session; onSession: (s: Session) => void }) {
+/** Marca "?app" en la URL mientras la app principal está montada. */
+function setAppMark(on: boolean): void {
+  const { pathname, search, hash } = window.location;
+  const parts = search
+    .replace(/^\?/, "")
+    .split("&")
+    .filter((p) => p && p !== "app" && !p.startsWith("app="));
+  if (on) parts.unshift("app");
+  const next = `${pathname}${parts.length ? `?${parts.join("&")}` : ""}${hash}`;
+  if (next !== `${pathname}${search}${hash}`) window.history.replaceState(window.history.state, "", next);
+}
+
+export interface ShellProps {
+  user: User;
+  session: Session;
+  onSession: (s: Session) => void;
+  /** Dentro del panel del ícono de chat (no toca el título de la pestaña). */
+  embedded?: boolean;
+  /** Panel abierto (por defecto sí). Cerrado: no queda ningún chat abierto. */
+  active?: boolean;
+  /** Total de no leídos (para el número del ícono de chat). */
+  onUnread?: (n: number) => void;
+  /** Algo pide atención: una llamada entrante o tocar un aviso. */
+  onAttention?: () => void;
+  /** Consola del fundador: volver al monitor. */
+  onExitConsole?: () => void;
+  /** Secciones extra en Configuración (consola del fundador). */
+  extraSettings?: (ws: Workspace) => ReactNode;
+  /** Cambiar el título de la pestaña con los no leídos (por defecto sí). */
+  manageTitle?: boolean;
+}
+
+export function Shell({
+  user,
+  session,
+  onSession,
+  embedded = false,
+  active = true,
+  onUnread,
+  onAttention,
+  onExitConsole,
+  extraSettings,
+  manageTitle = true,
+}: ShellProps) {
+  const linked = isLinkedScope();
   const ws = useWorkspace(session);
+  const attentionRef = useRef(onAttention);
+  attentionRef.current = onAttention;
   const [view, setView] = useState<View>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [settings, setSettings] = useState<DeviceSettings>(() => loadSettings());
@@ -99,6 +158,8 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
   // Service worker (avisos) y push de este dispositivo. El push es solo para
   // administradores (fundadores y admins); a un miembro se le desactiva.
   useEffect(() => {
+    // La cuenta vinculada no toca nada del push (es del fundador).
+    if (linked) return;
     void registerServiceWorker();
     if (session.admin) {
       void refreshPush(getFirebase().db, session.uid).then(setPushOn).catch(() => undefined);
@@ -108,11 +169,31 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
     }
     const onMessage = (e: MessageEvent) => {
       const d = e.data as { type?: string; chatId?: string } | null;
-      if (d?.type === "open-chat" && d.chatId) select(d.chatId);
+      if (d?.type === "open-chat" && d.chatId) {
+        attentionRef.current?.();
+        select(d.chatId);
+      }
     };
     navigator.serviceWorker?.addEventListener("message", onMessage);
     return () => navigator.serviceWorker?.removeEventListener("message", onMessage);
-  }, [session.uid, session.admin, select]);
+  }, [session.uid, session.admin, select, linked]);
+
+  // "?app" en la URL: el service worker lo usa para no repetir avisos.
+  useEffect(() => {
+    if (linked) return;
+    setAppMark(true);
+    return () => setAppMark(false);
+  }, [linked]);
+
+  // Panel cerrado: se cierra el chat abierto (no se marca leído sin verlo).
+  useEffect(() => {
+    if (active) return;
+    pushedHash.current = false;
+    if (window.location.hash) {
+      window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
+    }
+    setView(null);
+  }, [active]);
 
   // El navegador solo deja sonar audio después del primer toque.
   useEffect(() => {
@@ -158,13 +239,26 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
   }, [session]);
 
   const viewingId = view?.type === "chat" ? view.id : null;
-  const notifier = useNotifier({ ws, uid: session.uid, viewing: viewingId, settings, pushOn });
+  // La cuenta vinculada no muestra avisos del sistema (solo dentro del panel).
+  const notifierSettings = linked ? { ...settings, system: false } : settings;
+  const notifier = useNotifier({ ws, uid: session.uid, viewing: viewingId, settings: notifierSettings, pushOn });
   const calls = useCalls(session, user, ws);
+
+  // Una llamada abre el panel y sostiene la consola (no se cierra al bloquear).
+  const inCall = !!calls.view;
+  useEffect(() => {
+    if (!inCall) return;
+    holdConsole("llamada", 4 * 60 * 60 * 1000);
+    attentionRef.current?.();
+    return () => releaseConsole("llamada");
+  }, [inCall]);
 
   // Título de la pestaña y número en el ícono de la pantalla de inicio.
   const totalUnread = ws.chats.reduce((n, c) => n + (ws.muted.has(c.id) ? 0 : ws.unreadOf(c)), 0);
   useEffect(() => {
-    document.title = totalUnread > 0 ? `(${totalUnread}) Chat` : "Chat";
+    onUnread?.(totalUnread);
+    if (manageTitle && !embedded) document.title = totalUnread > 0 ? `(${totalUnread}) Tienda` : "Tienda";
+    if (linked) return; // el número del ícono de la app es de la cuenta principal
     const nav = navigator as Navigator & { setAppBadge?: (n: number) => Promise<void>; clearAppBadge?: () => Promise<void> };
     try {
       if (totalUnread > 0) void nav.setAppBadge?.(totalUnread).catch(() => undefined);
@@ -172,7 +266,7 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
     } catch {
       // Sin insignia en este navegador.
     }
-  }, [totalUnread]);
+  }, [totalUnread, onUnread, manageTitle, embedded, linked]);
 
   // Las notificaciones ya no muestran nombres: se borran los que hubiera
   // guardado una versión anterior en este dispositivo.
@@ -181,10 +275,7 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
   }, []);
 
   const logout = async () => {
-    clearFileCache();
-    await saveNotificationNames(null);
-    await clearKeys();
-    await signOut(getFirebase().auth);
+    await logoutHere(session.uid);
   };
 
   const groups = Array.from(new Set(ws.chats.map((c) => c.group)));
@@ -227,13 +318,8 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
     );
   }
 
-  if (ws.loading) {
-    return (
-      <div className="flex h-dvh items-center justify-center bg-neutral-950 text-sm text-neutral-500">
-        Cargando conversaciones…
-      </div>
-    );
-  }
+  // Mientras llegan los chats: la forma de la lista (nunca una pantalla vacía).
+  if (ws.loading) return <ChatListSkeleton />;
 
   const toast = notifier.toast;
   const toastChat = toast ? ws.chats.find((c) => c.id === toast.chatId) : undefined;
@@ -241,7 +327,7 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
   return (
     <div className="flex h-dvh bg-neutral-950 text-neutral-100">
       <aside
-        className={`${somethingOpen ? "hidden md:flex" : "flex"} w-full shrink-0 flex-col border-neutral-900 md:w-[22rem] md:border-r`}
+        className={`${somethingOpen ? "hidden md:flex" : "flex"} w-full shrink-0 flex-col border-white/[0.08] md:w-[22rem] md:border-r`}
       >
         <Sidebar
           ws={ws}
@@ -254,6 +340,7 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
           onOpenTasks={() => go("#pendientes")}
           onOpenSettings={() => go("#ajustes")}
           onCreate={() => setDialog({ mode: "create" })}
+          onExitConsole={onExitConsole}
         />
       </aside>
 
@@ -285,6 +372,8 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
             onSession={onSession}
             onBack={back}
             onLogout={() => void logout()}
+            onExitConsole={onExitConsole}
+            extraSections={extraSettings?.(ws)}
           />
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 text-sm text-neutral-500">
@@ -297,7 +386,8 @@ export function Shell({ user, session, onSession }: { user: User; session: Sessi
 
       {toast && (
         <div className="pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center px-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
-          <div className="pointer-events-auto flex w-full max-w-md items-center gap-3 rounded-2xl border border-neutral-800 bg-neutral-900/95 p-3 shadow-2xl backdrop-blur">
+          <div className="anim-pop-in pointer-events-auto relative isolate flex w-full max-w-md items-center gap-3 overflow-hidden rounded-[22px] p-3">
+            <div className="glass-thick glass-ring absolute inset-0 -z-10" aria-hidden="true" />
             <button
               type="button"
               onClick={() => {

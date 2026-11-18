@@ -3,8 +3,9 @@
 /**
  * Login.tsx — Inicio de sesión con correo y contraseña.
  *
- * No hay registro desde la web: las dos cuentas se crean a mano en la consola
- * de Firebase, así nadie más puede darse de alta.
+ * No hay registro desde la web: las cuentas se crean a mano en la consola de
+ * Firebase, así nadie más puede darse de alta. Se usa en la ventana de
+ * "Iniciar sesión" de la landing y en la cuenta vinculada.
  */
 
 import { useState, type FormEvent } from "react";
@@ -30,7 +31,7 @@ function loginErrorMessage(code: string): string {
   }
 }
 
-export function Login() {
+export function Login({ title = "Iniciar sesión", note }: { title?: string; note?: string } = {}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +54,8 @@ export function Login() {
   return (
     <div className="flex h-dvh items-center justify-center bg-neutral-950 px-4 text-neutral-200">
       <form onSubmit={submit} className="w-full max-w-sm space-y-4">
-        <h1 className="text-lg font-medium tracking-tight">Iniciar sesión</h1>
+        <h1 className="text-lg font-medium tracking-tight">{title}</h1>
+        {note && <p className="text-sm text-neutral-400">{note}</p>}
 
         <input
           type="email"

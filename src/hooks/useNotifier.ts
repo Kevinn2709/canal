@@ -68,7 +68,7 @@ export function useNotifier(args: {
       } else if (settings.system && !pushOn) {
         // Igual que las push: aviso neutro, sin texto ni nombres (se ve en la
         // pantalla bloqueada).
-        void showSystemNotification("Chat", "Nuevo mensaje", chat.id);
+        void showSystemNotification("Tienda en linea", "Nuevo Pedido Registrado", chat.id);
       }
     },
     [viewing, ws, settings, pushOn]

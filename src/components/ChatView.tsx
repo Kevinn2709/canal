@@ -26,6 +26,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type DragEvent,
@@ -70,7 +71,7 @@ import {
   type FileStore,
   type PreparedFile,
 } from "@/lib/files";
-import { REACTION_EMOJIS, setReaction } from "@/lib/reactions";
+import { REACTION_EMOJIS, setReaction, type Reaction } from "@/lib/reactions";
 import { clearChat, deleteFileChunks, deleteMessage, setStar, type StoredMessage } from "@/lib/messages";
 import { markOpened, wasOpenedHere } from "@/lib/viewonce";
 import { createTask, MAX_TASK_LENGTH, type Task } from "@/lib/tasks";
@@ -107,6 +108,8 @@ interface Upload {
 }
 
 const PAGE_SIZE = 200;
+/** Lista vacía compartida (misma identidad: no rompe el React.memo de los mensajes). */
+const NO_REACTIONS: Reaction[] = [];
 const MAX_ATTACHMENTS = 10;
 
 function errorMessage(err: unknown): string {
@@ -200,12 +203,19 @@ function ChatRoom({
   const rtdb = ws.rtdbChats.has(chat.id) ? getRtdb() : null;
   const { active, setActivity } = useActivity(chat.id, user.uid, rtdb);
   const otherTyping = active.length > 0;
-  const fileStore: FileStore = chatFileStore(chat, cryptoKey);
-  const libStore: FileStore | null = session.ws ? libraryFileStore(session.ws) : null;
+  // Memorizados: los mensajes (React.memo) los comparan por identidad.
+  const fileStore: FileStore = useMemo(
+    () => chatFileStore({ id: chat.id, legacy: chat.legacy }, cryptoKey),
+    [chat.id, chat.legacy, cryptoKey]
+  );
+  const libKey = session.ws;
+  const libStore: FileStore | null = useMemo(() => (libKey ? libraryFileStore(libKey) : null), [libKey]);
   const group = chat.members.length > 2;
   const muted = ws.muted.has(chat.id);
 
   const listRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
   const nearBottom = useRef(true);
   const heightBeforeLoadMore = useRef<number | null>(null);
   const prevCount = useRef(0);
@@ -365,6 +375,28 @@ function ChatRoom({
     if (!el) return;
     nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   };
+
+  // Barras de vidrio: los mensajes pasan por debajo de la barra de arriba y
+  // de la de escribir. El espacio que ocupan se aplica directo en el DOM (sin
+  // volver a dibujar la lista) y, si estabas abajo, sigues abajo.
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const head = headerRef.current;
+    const foot = bottomRef.current;
+    if (!list || !head || !foot) return;
+    const apply = () => {
+      const stick = nearBottom.current;
+      list.style.paddingTop = `${head.offsetHeight + 12}px`;
+      list.style.paddingBottom = `${foot.offsetHeight + 10}px`;
+      if (stick) list.scrollTop = list.scrollHeight;
+    };
+    apply();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(apply);
+    ro.observe(head);
+    ro.observe(foot);
+    return () => ro.disconnect();
+  }, []);
 
   // Deslizar hacia abajo sobre los mensajes cierra el teclado (como en las apps).
   const touchY = useRef<number | null>(null);
@@ -618,6 +650,15 @@ function ChatRoom({
     setFocusSignal((n) => n + 1);
   };
 
+  // Versiones estables de las acciones para los mensajes (React.memo): no
+  // cambian de identidad en cada dibujo y siempre llaman a la más reciente.
+  const latest = useRef({ toggleReaction, quickReact, replyToMessage });
+  latest.current = { toggleReaction, quickReact, replyToMessage };
+  const onToggleReactionStable = useCallback((m: ChatMessage, emoji: string) => latest.current.toggleReaction(m, emoji), []);
+  const onQuickReactStable = useCallback((m: ChatMessage) => latest.current.quickReact(m), []);
+  const onReplyStable = useCallback((m: ChatMessage) => latest.current.replyToMessage(m), []);
+  const onOpenImage = useCallback((file: FileInfo, url: string) => setViewer({ file, url }), []);
+
   const copyMessage = (m: ChatMessage) => {
     const text =
       m.payload?.t === "text" ? m.payload.text : m.payload?.t === "file" && !m.payload.once ? m.payload.text ?? "" : "";
@@ -746,6 +787,11 @@ function ChatRoom({
     }
     const firstOfRun = separator !== null || prevUid !== m.uid;
     prevUid = m.uid;
+    const next = messages[i + 1];
+    const lastOfRun =
+      !next ||
+      next.uid !== m.uid ||
+      (!!next.createdAt && !!m.createdAt && dayKey(next.createdAt) !== dayKey(m.createdAt));
     const seen = mine && m.id === lastMineId ? groupSeen(m, i) : "";
     const footer = [m.createdAt ? formatTime(m.createdAt) : "", m.state === "legacy" ? "sin cifrar" : "", seen]
       .filter(Boolean)
@@ -760,19 +806,20 @@ function ChatRoom({
         ws={ws}
         group={group || !chat.members.includes(m.uid)}
         firstOfRun={firstOfRun}
+        lastOfRun={lastOfRun}
         footer={footer}
         tick={mine ? tickOf(m, i) : null}
         separator={separator}
-        reactions={reactions.get(m.id) ?? []}
+        reactions={reactions.get(m.id) ?? NO_REACTIONS}
         highlighted={highlight === m.id}
         store={isSticker && m.payload?.t === "sticker" && m.payload.lib ? libStore : fileStore}
         once={onceState(m)}
-        onOpenImage={(file, url) => setViewer({ file, url })}
+        onOpenImage={onOpenImage}
         onActions={setActionFor}
-        onToggleReaction={toggleReaction}
+        onToggleReaction={onToggleReactionStable}
         onJump={jumpTo}
-        onReply={replyToMessage}
-        onQuickReact={quickReact}
+        onReply={onReplyStable}
+        onQuickReact={onQuickReactStable}
         onOpenOnce={setOnceViewer}
       />
     );
@@ -788,18 +835,22 @@ function ChatRoom({
   return (
     <div className="flex h-full min-h-0">
       <div
-        className="relative flex min-w-0 flex-1 flex-col"
+        className="relative min-w-0 flex-1 overflow-hidden"
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        <header className="flex shrink-0 items-center gap-1 border-b border-neutral-900 px-2 pb-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] md:px-4">
+        <header
+          ref={headerRef}
+          className="absolute inset-x-0 top-0 z-20 isolate flex items-center gap-0.5 px-1.5 pb-2 pt-[max(0.625rem,env(safe-area-inset-top))] md:px-4"
+        >
+          <div className="glass glass-edge-top absolute inset-0 -z-10" aria-hidden="true" />
           <button
             onClick={onBack}
-            className="rounded-full p-2 text-neutral-300 hover:bg-neutral-900 md:hidden"
+            className="flex h-10 w-9 items-center justify-center rounded-full text-sky-500 hover:bg-white/10 md:hidden"
             aria-label="Volver a la lista"
           >
-            <BackIcon />
+            <BackIcon className="h-6 w-6" />
           </button>
           <button
             type="button"
@@ -810,12 +861,12 @@ function ChatRoom({
             <ChatAvatar ws={ws} chat={chat} myUid={user.uid} size={36} />
             <span className="min-w-0">
               <span className="flex items-center gap-1.5">
-                <span className="truncate text-[15px] font-medium">{chat.name}</span>
+                <span className="truncate text-[16px] font-semibold tracking-tight">{chat.name}</span>
                 {muted && <BellOffIcon className="h-3.5 w-3.5 shrink-0 text-neutral-500" />}
               </span>
               <span className="block truncate text-xs text-neutral-500">
                 {typingLabel ? (
-                  <span className="text-emerald-400">{typingLabel}</span>
+                  <span className="text-sky-400">{typingLabel}</span>
                 ) : other ? (
                   otherOnline ? (
                     <span className="text-emerald-400">En línea</span>
@@ -832,7 +883,7 @@ function ChatRoom({
             <>
               <button
                 onClick={() => onCall(false)}
-                className="rounded-full p-2 text-neutral-300 hover:bg-neutral-900"
+                className="flex h-10 w-10 items-center justify-center rounded-full text-sky-500 hover:bg-white/10"
                 aria-label="Llamar"
                 title="Llamada cifrada"
               >
@@ -840,7 +891,7 @@ function ChatRoom({
               </button>
               <button
                 onClick={() => onCall(true)}
-                className="rounded-full p-2 text-neutral-300 hover:bg-neutral-900"
+                className="flex h-10 w-10 items-center justify-center rounded-full text-sky-500 hover:bg-white/10"
                 aria-label="Videollamada"
                 title="Videollamada cifrada"
               >
@@ -850,7 +901,7 @@ function ChatRoom({
           )}
           <button
             onClick={() => setPanel((p) => (p === "tasks" ? null : "tasks"))}
-            className={`relative rounded-full p-2 hover:bg-neutral-900 ${panel === "tasks" ? "text-neutral-100" : "text-neutral-300"}`}
+            className={`relative flex h-10 w-10 items-center justify-center rounded-full hover:bg-white/10 ${panel === "tasks" ? "text-sky-300" : "text-sky-500"}`}
             aria-label={`Pendientes (${openTasks.length})`}
             aria-pressed={panel === "tasks"}
           >
@@ -864,7 +915,7 @@ function ChatRoom({
           <div className="relative">
             <button
               onClick={() => setMenuOpen((v) => !v)}
-              className="rounded-full p-2 text-neutral-300 hover:bg-neutral-900"
+              className="flex h-10 w-10 items-center justify-center rounded-full text-sky-500 hover:bg-white/10"
               aria-label="Opciones de la conversación"
             >
               <MoreIcon />
@@ -872,13 +923,13 @@ function ChatRoom({
             {menuOpen && (
               <>
                 <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
-                <div className="absolute right-0 z-30 mt-1 w-56 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 py-1 text-sm shadow-xl">
+                <div className="anim-pop-in absolute right-0 z-30 mt-1 w-60 overflow-hidden rounded-[14px] bg-neutral-800/95 py-1 text-[15px] shadow-[0_20px_50px_rgba(0,0,0,0.6)] ring-1 ring-white/10">
                   <button
                     onClick={() => {
                       setMenuOpen(false);
                       setPanel("info");
                     }}
-                    className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
+                    className="block min-h-[44px] w-full px-4 py-2.5 text-left hover:bg-white/10"
                   >
                     Información y miembros
                   </button>
@@ -887,7 +938,7 @@ function ChatRoom({
                       setMenuOpen(false);
                       setPanel("starred");
                     }}
-                    className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
+                    className="block min-h-[44px] w-full px-4 py-2.5 text-left hover:bg-white/10"
                   >
                     Mensajes destacados
                   </button>
@@ -896,7 +947,7 @@ function ChatRoom({
                       setMenuOpen(false);
                       ws.toggleMute(chat.id);
                     }}
-                    className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
+                    className="block min-h-[44px] w-full px-4 py-2.5 text-left hover:bg-white/10"
                   >
                     {muted ? "Quitar silencio" : "Silenciar"}
                   </button>
@@ -907,7 +958,7 @@ function ChatRoom({
                           setMenuOpen(false);
                           onEdit();
                         }}
-                        className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
+                        className="block min-h-[44px] w-full px-4 py-2.5 text-left hover:bg-white/10"
                       >
                         Cambiar nombre o proyecto
                       </button>
@@ -916,7 +967,7 @@ function ChatRoom({
                           setMenuOpen(false);
                           void setChatArchived(getFirebase().db, chat.id, !chat.archived).catch(() => undefined);
                         }}
-                        className="block w-full px-3 py-2 text-left hover:bg-neutral-800"
+                        className="block min-h-[44px] w-full px-4 py-2.5 text-left hover:bg-white/10"
                       >
                         {chat.archived ? "Desarchivar" : "Archivar"}
                       </button>
@@ -926,7 +977,7 @@ function ChatRoom({
                           setConfirmClear(true);
                         }}
                         disabled={!!clearing}
-                        className="block w-full px-3 py-2 text-left text-red-400 hover:bg-neutral-800 disabled:opacity-40"
+                        className="block min-h-[44px] w-full px-4 py-2.5 text-left text-red-400 hover:bg-white/10 disabled:opacity-40"
                       >
                         Vaciar chat…
                       </button>
@@ -943,13 +994,13 @@ function ChatRoom({
           onScroll={onScroll}
           onTouchStart={onListTouchStart}
           onTouchMove={onListTouchMove}
-          className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 [overflow-anchor:none] md:px-6"
+          className="absolute inset-0 overflow-y-auto overflow-x-hidden overscroll-contain px-3 [overflow-anchor:none] md:px-6"
         >
           {hasMore && (
             <div className="mb-4 flex justify-center">
               <button
                 onClick={loadMore}
-                className="rounded-full border border-neutral-800 px-3 py-1.5 text-xs text-neutral-400 hover:bg-neutral-900"
+                className="rounded-full bg-neutral-900 px-3.5 py-1.5 text-[13px] text-sky-400 hover:bg-neutral-800"
               >
                 Cargar mensajes anteriores
               </button>
@@ -963,8 +1014,8 @@ function ChatRoom({
           {rows}
 
           {uploads.map((u) => (
-            <div key={u.localId} className="mb-1.5 flex justify-end">
-              <div className="max-w-[85%] rounded-2xl bg-neutral-100 p-1.5 text-neutral-900 sm:max-w-[75%]">
+            <div key={u.localId} className="mb-2 flex justify-end">
+              <div className="max-w-[85%] rounded-[18px] bg-bubble-mine p-1.5 text-white sm:max-w-[75%]">
                 {u.previewUrl ? (
                   <img src={u.previewUrl} alt={u.name} className="max-h-60 max-w-[260px] rounded-xl opacity-60" />
                 ) : (
@@ -978,7 +1029,7 @@ function ChatRoom({
                   </div>
                 )}
                 <div className="flex items-center justify-between gap-3 px-1.5 pt-1">
-                  <span className={`text-[10px] ${u.error ? "text-red-600" : "text-neutral-500"}`}>
+                  <span className={`text-[10px] ${u.error ? "font-semibold text-white" : "text-white/70"}`}>
                     {u.error ?? `Cifrando y subiendo… ${Math.round(u.progress * 100)}%`}
                   </span>
                   {u.error && (
@@ -992,65 +1043,70 @@ function ChatRoom({
           ))}
 
           {otherTyping && (
-            <div className="mb-1.5 flex justify-start" aria-label={typingLabel || "escribiendo"}>
-              <div className="flex items-center gap-1 rounded-2xl bg-neutral-800 px-3.5 py-3">
+            <div className="anim-pop-in mb-2 flex justify-start pl-1" role="status" aria-label={typingLabel || "escribiendo"}>
+              <div className="relative flex h-[36px] items-center gap-[5px] rounded-[18px] bg-bubble-other px-[14px]">
                 {[0, 1, 2].map((i) => (
                   <span
                     key={i}
-                    className="h-1.5 w-1.5 animate-bounce rounded-full bg-neutral-400"
-                    style={{ animationDelay: `${i * 150}ms` }}
+                    className="typing-dot h-[7px] w-[7px] rounded-full bg-neutral-400"
+                    style={{ animationDelay: `${i * 0.18}s` }}
                   />
                 ))}
+                <span className="absolute -bottom-[2px] -left-[2px] h-[11px] w-[11px] rounded-full bg-bubble-other" aria-hidden="true" />
+                <span className="absolute -bottom-[8px] -left-[7px] h-[5px] w-[5px] rounded-full bg-bubble-other" aria-hidden="true" />
               </div>
             </div>
           )}
         </div>
 
-        {chat.archived && (
-          <div className="shrink-0 border-t border-neutral-900 px-4 py-2 text-xs text-neutral-500">
-            Esta conversación está archivada.{" "}
-            <button onClick={() => void setChatArchived(getFirebase().db, chat.id, false).catch(() => undefined)} className="underline">
-              Desarchivar
-            </button>
-          </div>
-        )}
+        <div ref={bottomRef} className="absolute inset-x-0 bottom-0 z-10 isolate">
+          <div className="glass glass-edge-bottom absolute inset-0 -z-10" aria-hidden="true" />
+          {chat.archived && (
+            <div className="px-4 pb-1 pt-2 text-center text-[12px] text-neutral-500">
+              Esta conversación está archivada.{" "}
+              <button onClick={() => void setChatArchived(getFirebase().db, chat.id, false).catch(() => undefined)} className="text-sky-400">
+                Desarchivar
+              </button>
+            </div>
+          )}
 
-        {error && (
-          <div className="flex shrink-0 items-start justify-between gap-3 border-t border-red-900/40 bg-red-950/40 px-4 py-2 text-xs text-red-300">
-            <span>{error}</span>
-            <button onClick={() => setError(null)} className="shrink-0 underline">
-              Cerrar
-            </button>
-          </div>
-        )}
+          {error && (
+            <div className="mx-3 mt-2 flex items-start justify-between gap-3 rounded-[12px] bg-red-500/15 px-3.5 py-2 text-[13px] text-red-300" role="alert">
+              <span>{error}</span>
+              <button onClick={() => setError(null)} className="shrink-0 font-semibold text-red-200">
+                Cerrar
+              </button>
+            </div>
+          )}
 
-        {(clearing || notice) && (
-          <div className="shrink-0 border-t border-neutral-900 bg-neutral-900 px-4 py-2 text-xs text-neutral-300" role="status">
-            {clearing ?? notice}
-          </div>
-        )}
+          {(clearing || notice) && (
+            <div className="anim-pop-in mx-auto mt-2 w-fit rounded-full bg-white/10 px-3.5 py-1.5 text-[13px] text-neutral-200" role="status">
+              {clearing ?? notice}
+            </div>
+          )}
 
-        <Composer
-          libKey={session.ws}
-          uid={user.uid}
-          mentionables={group ? others.map((o) => ({ uid: o, name: ws.nameOf(o) })).filter((o) => o.name !== "Miembro") : []}
-          attachments={attachments}
-          preparing={preparing}
-          replyTo={replyTo ? { author: replyTo.uid === user.uid ? "ti" : ws.nameOf(replyTo.uid), preview: replyTo.preview } : null}
-          focusSignal={focusSignal}
-          keepKeyboard={keepKeyboard}
-          locked={chat.locked && !ws.admin}
-          onAddFiles={(files) => void addFiles(files)}
-          onRemoveAttachment={removeAttachment}
-          onCancelReply={() => setReplyTo(null)}
-          onSend={onSend}
-          onSendSticker={onSendSticker}
-          onSendVoice={onSendVoice}
-          onActivity={onComposerActivity}
-        />
+          <Composer
+            libKey={session.ws}
+            uid={user.uid}
+            mentionables={group ? others.map((o) => ({ uid: o, name: ws.nameOf(o) })).filter((o) => o.name !== "Miembro") : []}
+            attachments={attachments}
+            preparing={preparing}
+            replyTo={replyTo ? { author: replyTo.uid === user.uid ? "ti" : ws.nameOf(replyTo.uid), preview: replyTo.preview } : null}
+            focusSignal={focusSignal}
+            keepKeyboard={keepKeyboard}
+            locked={chat.locked && !ws.admin}
+            onAddFiles={(files) => void addFiles(files)}
+            onRemoveAttachment={removeAttachment}
+            onCancelReply={() => setReplyTo(null)}
+            onSend={onSend}
+            onSendSticker={onSendSticker}
+            onSendVoice={onSendVoice}
+            onActivity={onComposerActivity}
+          />
+        </div>
 
         {dragOver && (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center border-2 border-dashed border-neutral-500 bg-neutral-950/80 text-sm text-neutral-300">
+          <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center border-2 border-dashed border-sky-500/70 bg-neutral-950/80 text-sm text-neutral-300">
             Suelta aquí para adjuntar
           </div>
         )}

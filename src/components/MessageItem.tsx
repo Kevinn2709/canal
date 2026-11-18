@@ -10,7 +10,12 @@
  * - Reacciones debajo; tocar una reacción pone o quita la tuya.
  * - Estrella si está destacado.
  * - Tus mensajes: reloj (enviando), una palomita (guardado en el servidor) o
- *   dos palomitas azules (leído; en grupos, por todos).
+ *   dos palomitas (leído; en grupos, por todos). La palomita nueva se dibuja.
+ * - Burbujas al estilo de Mensajes (iMessage): azul las tuyas, gris las de
+ *   los demás; las seguidas de la misma persona se juntan (esquinas internas
+ *   más cerradas) y la última de cada racha lleva la "colita".
+ * - Memorizado (React.memo): si cambia "escribiendo…", la presencia u otra
+ *   cosa que no le toca, el mensaje no se vuelve a dibujar.
  * - Acciones (reaccionar, responder, copiar, pendiente, destacar, eliminar): pulsación larga en el
  *   teléfono, clic derecho o el botón "…" que aparece al pasar el ratón.
  * - Gestos: deslizar a la derecha para responder; doble toque (o doble clic)
@@ -20,7 +25,7 @@
  * - Foto o video de una vista: tarjeta que se abre una sola vez.
  */
 
-import { useRef, useState, type MouseEvent, type PointerEvent, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import { isAudio, isImage, isVideo, mentionsOf, type FileInfo, type Payload } from "@/lib/chats";
 import type { FileStore } from "@/lib/files";
 import type { Reaction } from "@/lib/reactions";
@@ -32,7 +37,7 @@ import {
   MediaAttachment,
   StickerAttachment,
 } from "./Attachments";
-import { CheckCheckIcon, CheckIcon, ClockIcon, MoreIcon, ReplyIcon, StarIcon } from "./Icons";
+import { MoreIcon, ReplyIcon, StarIcon } from "./Icons";
 import { VoiceNote } from "./VoiceNote";
 import { ViewOnceCard } from "./ViewOnce";
 
@@ -76,7 +81,7 @@ function withMentions(text: string, names: string[], mineColor: boolean): ReactN
     }
     if (best > 0) parts.push(rest.slice(0, best));
     parts.push(
-      <span key={key++} className={`font-medium ${mineColor ? "text-sky-700" : "text-sky-400"}`}>
+      <span key={key++} className={mineColor ? "font-semibold underline decoration-white/60 underline-offset-2" : "font-medium text-sky-400"}>
         {found}
       </span>
     );
@@ -85,34 +90,59 @@ function withMentions(text: string, names: string[], mineColor: boolean): ReactN
   return parts;
 }
 
-export function MessageItem({
-  m,
-  mine,
-  myUid,
-  ws,
-  group,
-  firstOfRun,
-  footer,
-  tick,
-  separator,
-  reactions,
-  highlighted,
-  store,
-  once,
-  onOpenImage,
-  onActions,
-  onToggleReaction,
-  onJump,
-  onReply,
-  onQuickReact,
-  onOpenOnce,
-}: {
+/** Palomitas y reloj, dibujados a mano para que se vean finos a 12 px. */
+function TickMark({ tick, readClass, animate }: { tick: Tick; readClass: string; animate: boolean }) {
+  if (tick === "pending") {
+    return (
+      <span aria-label="Enviando" title="Enviando" className="inline-flex">
+        <svg viewBox="0 0 12 12" className="h-3 w-3" aria-hidden="true">
+          <circle cx="6" cy="6" r="4.7" fill="none" stroke="currentColor" strokeWidth="1.25" />
+          <path d="M6 3.4V6l1.7 1.1" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
+    );
+  }
+  if (tick === "sent") {
+    return (
+      <span aria-label="Entregado" title="Entregado" className="inline-flex">
+        <svg viewBox="0 0 14 12" className={`h-3 w-[14px] ${animate ? "tick-draw" : ""}`} aria-hidden="true">
+          <path d="M2.4 6.5 5.2 9.2 11.6 2.8" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
+    );
+  }
+  return (
+    <span aria-label="Leído" title="Leído" className={`inline-flex ${readClass}`}>
+      <svg viewBox="0 0 18 12" className={`h-3 w-[18px] ${animate ? "tick-draw" : ""}`} aria-hidden="true">
+        <path d="M1.4 6.5 4.2 9.2 10.6 2.8" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M7.7 8.6 8.3 9.2 14.7 2.8" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </span>
+  );
+}
+
+/** "Colita" de la última burbuja de una racha (como en Mensajes). */
+function BubbleTail({ mine }: { mine: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 12 17"
+      className={`pointer-events-none absolute bottom-0 h-[17px] w-3 ${mine ? "-right-[5px] fill-bubble-mine" : "-left-[5px] -scale-x-100 fill-bubble-other"}`}
+      aria-hidden="true"
+    >
+      <path d="M0 0h7c0 8.6 1.6 13.6 5 17H0z" />
+    </svg>
+  );
+}
+
+export interface MessageItemProps {
   m: ChatMessage;
   mine: boolean;
   myUid: string;
   ws: Workspace;
   group: boolean;
   firstOfRun: boolean;
+  /** Último mensaje seguido de la misma persona (lleva colita y más aire). */
+  lastOfRun: boolean;
   footer: string;
   tick: Tick | null; // solo en tus mensajes
   separator: string | null;
@@ -127,7 +157,70 @@ export function MessageItem({
   onReply: (m: ChatMessage) => void;
   onQuickReact: (m: ChatMessage) => void;
   onOpenOnce: (m: ChatMessage) => void;
-}) {
+}
+
+/** Solo se vuelve a dibujar si cambió algo que este mensaje muestra. */
+function sameMessageProps(a: MessageItemProps, b: MessageItemProps): boolean {
+  return (
+    a.m.id === b.m.id &&
+    a.m.uid === b.m.uid &&
+    a.m.payload === b.m.payload &&
+    a.m.state === b.m.state &&
+    a.m.pending === b.m.pending &&
+    a.m.starred === b.m.starred &&
+    (a.m.createdAt?.getTime() ?? 0) === (b.m.createdAt?.getTime() ?? 0) &&
+    a.mine === b.mine &&
+    a.myUid === b.myUid &&
+    a.group === b.group &&
+    a.firstOfRun === b.firstOfRun &&
+    a.lastOfRun === b.lastOfRun &&
+    a.footer === b.footer &&
+    a.tick === b.tick &&
+    a.separator === b.separator &&
+    a.reactions === b.reactions &&
+    a.highlighted === b.highlighted &&
+    a.store === b.store &&
+    (a.once?.opened ?? null) === (b.once?.opened ?? null) &&
+    (a.once?.openedByAll ?? null) === (b.once?.openedByAll ?? null) &&
+    // Del espacio de trabajo solo importan nombres, colores y fotos.
+    a.ws.profiles === b.ws.profiles &&
+    a.ws.avatars === b.ws.avatars &&
+    a.ws.nameOf === b.ws.nameOf &&
+    a.onOpenImage === b.onOpenImage &&
+    a.onActions === b.onActions &&
+    a.onToggleReaction === b.onToggleReaction &&
+    a.onJump === b.onJump &&
+    a.onReply === b.onReply &&
+    a.onQuickReact === b.onQuickReact &&
+    a.onOpenOnce === b.onOpenOnce
+  );
+}
+
+export const MessageItem = memo(MessageItemView, sameMessageProps);
+
+function MessageItemView({
+  m,
+  mine,
+  myUid,
+  ws,
+  group,
+  firstOfRun,
+  lastOfRun,
+  footer,
+  tick,
+  separator,
+  reactions,
+  highlighted,
+  store,
+  once,
+  onOpenImage,
+  onActions,
+  onToggleReaction,
+  onJump,
+  onReply,
+  onQuickReact,
+  onOpenOnce,
+}: MessageItemProps) {
   const pressTimer = useRef<number | null>(null);
   const gesture = useRef<{ x: number; y: number; moved: boolean; swiping: boolean } | null>(null);
   const longPressed = useRef(false);
@@ -135,6 +228,12 @@ export function MessageItem({
   const dxRef = useRef(0);
   const [dx, setDxState] = useState(0);
   const [revealed, setRevealed] = useState(false);
+  // La palomita se dibuja solo cuando cambia (no al abrir el chat).
+  const prevTick = useRef(tick);
+  const animateTick = prevTick.current !== tick;
+  useEffect(() => {
+    prevTick.current = tick;
+  }, [tick]);
 
   const p = m.payload;
   const spoiler = p?.t === "text" && p.sp === true;
@@ -325,29 +424,31 @@ export function MessageItem({
     }
   };
 
-  const bubbleColor = isSticker
-    ? ""
+  const bubbleColor = isSticker ? "" : mine ? "bg-bubble-mine text-white" : "bg-bubble-other text-neutral-50";
+  const padding = isSticker ? "" : isMedia ? "p-1.5" : "px-3.5 py-[7px]";
+  const footerColor = isSticker ? "text-neutral-500" : mine ? "text-white/70" : "text-neutral-400";
+  // Esquinas: las del lado de quien escribe se cierran entre mensajes seguidos.
+  const tail = lastOfRun && !isSticker && !(p?.t === "file" && !p.once);
+  const big = "18px";
+  const joined = "6px";
+  const radius = isSticker
+    ? undefined
     : mine
-      ? "bg-neutral-100 text-neutral-900"
-      : "bg-neutral-800 text-neutral-100";
-  const padding = isSticker ? "" : isMedia ? "p-1.5" : "px-3.5 py-2";
-  const footerColor = isSticker ? "text-neutral-500" : mine ? "text-neutral-500" : "text-neutral-400";
-  const tickIcon =
-    tick === "pending" ? (
-      <ClockIcon className="h-3 w-3" />
-    ) : tick === "read" ? (
-      <span className="text-sky-500" aria-label="Leído" title="Leído">
-        <CheckCheckIcon className="h-3.5 w-3.5" />
-      </span>
-    ) : tick === "sent" ? (
-      <span aria-label="Entregado" title="Entregado">
-        <CheckIcon className="h-3.5 w-3.5" />
-      </span>
-    ) : null;
+      ? {
+          borderRadius: big,
+          borderTopRightRadius: firstOfRun ? big : joined,
+          borderBottomRightRadius: lastOfRun ? (tail ? "4px" : big) : joined,
+        }
+      : {
+          borderRadius: big,
+          borderTopLeftRadius: firstOfRun ? big : joined,
+          borderBottomLeftRadius: lastOfRun ? (tail ? "4px" : big) : joined,
+        };
+  const tickIcon = tick ? <TickMark tick={tick} readClass={isSticker ? "text-sky-500" : mine ? "text-white" : ""} animate={animateTick} /> : null;
 
   return (
     <div id={`m-${m.id}`} className="relative">
-      {separator && <div className="my-4 text-center text-[11px] text-neutral-500">{separator}</div>}
+      {separator && <div className="my-4 text-center text-[11px] font-medium text-neutral-500">{separator}</div>}
       {dx > 0 && (
         <span
           className="pointer-events-none absolute bottom-3 left-1 text-neutral-400"
@@ -358,7 +459,7 @@ export function MessageItem({
         </span>
       )}
       <div
-        className={`group mb-1.5 flex items-center gap-1 ${mine ? "flex-row-reverse" : ""} ${showSender ? "mt-3" : ""}`}
+        className={`group flex items-center gap-1 ${lastOfRun ? "mb-2" : "mb-[3px]"} ${mine ? "flex-row-reverse" : ""} ${showSender ? "mt-3" : ""}`}
         style={{ transform: dx ? `translateX(${dx}px)` : undefined, transition: dx ? "none" : "transform 180ms ease-out" }}
       >
         {group && !mine && (
@@ -380,19 +481,21 @@ export function MessageItem({
             onDoubleClick={onDoubleClick}
             onClickCapture={onClickCapture}
             onContextMenu={onContextMenu}
-            className={`max-w-full touch-pan-y rounded-2xl transition-shadow [-webkit-touch-callout:none] [@media(pointer:coarse)]:select-none ${bubbleColor} ${padding} ${
-              highlighted ? "ring-2 ring-sky-400" : mentionsMe ? "ring-1 ring-sky-500/60" : ""
+            className={`relative max-w-full touch-pan-y transition-shadow [-webkit-touch-callout:none] [@media(pointer:coarse)]:select-none ${bubbleColor} ${padding} ${
+              highlighted ? (mine ? "ring-2 ring-white/80" : "ring-2 ring-sky-400") : mentionsMe ? "ring-1 ring-sky-500/70" : ""
             }`}
+            style={radius}
           >
+            {tail && <BubbleTail mine={mine} />}
             {p?.re && (
               <button
                 type="button"
                 onClick={() => p.re && onJump(p.re.id)}
-                className={`mb-1.5 block w-full min-w-[8rem] rounded-lg border-l-2 border-sky-500 px-2 py-1 text-left ${
-                  mine || isSticker ? "bg-black/5" : "bg-white/5"
+                className={`mb-1.5 block w-full min-w-[8rem] rounded-[10px] border-l-[3px] px-2 py-1 text-left ${
+                  mine ? "border-white/80 bg-white/15" : isSticker ? "border-sky-500 bg-white/[0.06]" : "border-sky-500 bg-white/[0.07]"
                 }`}
               >
-                <span className="block text-[11px] font-medium text-sky-600">
+                <span className={`block text-[11px] font-semibold ${mine ? "text-white" : "text-sky-400"}`}>
                   {p.re.uid === myUid ? "Tú" : ws.nameOf(p.re.uid)}
                 </span>
                 <span className="block truncate text-xs opacity-75">{p.re.preview}</span>
@@ -425,14 +528,14 @@ export function MessageItem({
           </div>
 
           {groups.length > 0 && (
-            <div className={`-mt-1 flex flex-wrap gap-1 px-1 ${mine ? "justify-end" : ""}`}>
+            <div className={`relative z-[1] -mt-1.5 flex flex-wrap gap-1 px-1 ${mine ? "justify-end" : ""}`}>
               {groups.map((g) => (
                 <button
                   key={g.emoji}
                   type="button"
                   onClick={() => onToggleReaction(m, g.emoji)}
-                  className={`flex items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-xs ${
-                    g.mine ? "border-sky-500/60 bg-sky-500/15" : "border-neutral-800 bg-neutral-900"
+                  className={`flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-xs ring-2 ring-neutral-950 ${
+                    g.mine ? "bg-sky-500/30" : "bg-neutral-800"
                   }`}
                   aria-label={`Reacción ${g.emoji}`}
                   title={g.who.join(", ")}
